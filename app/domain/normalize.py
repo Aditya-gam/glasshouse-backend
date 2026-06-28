@@ -25,21 +25,26 @@ from app.domain.output_schema import (
     Span,
 )
 
-# Unambiguous (no ReDoS): integer part, then an optional decimal that must start with '.', so the
-# two digit-runs can't overlap and backtrack (the original `[0-9,]*\.?[0-9]*` could).
-_NUMBER = re.compile(r"\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM])?")
-
 
 def _parse_number(text: str) -> float | None:
-    match = _NUMBER.search(text)
-    if match is None:
+    """Extract the first number (commas + optional decimal, k/m suffix). Regex-free → no ReDoS."""
+    cleaned = text.replace(",", "")
+    start = next((i for i, char in enumerate(cleaned) if char.isdigit()), None)
+    if start is None:
         return None
-    number = float(match.group(1).replace(",", ""))
-    suffix = match.group(2)
+    index = start
+    seen_dot = False
+    while index < len(cleaned) and (
+        cleaned[index].isdigit() or (cleaned[index] == "." and not seen_dot)
+    ):
+        seen_dot = seen_dot or cleaned[index] == "."
+        index += 1
+    number = float(cleaned[start:index].rstrip("."))
+    suffix = cleaned[index] if index < len(cleaned) else ""
     if suffix in ("k", "K"):
-        number *= 1_000
-    elif suffix in ("m", "M"):
-        number *= 1_000_000
+        return number * 1_000
+    if suffix in ("m", "M"):
+        return number * 1_000_000
     return number
 
 
