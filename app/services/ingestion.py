@@ -1,10 +1,11 @@
 """Ingestion service — the shared steps that turn parsed records into canonical items.
 
-`run_ingestion` is the parsed → canonical seam (M1.1): per-source parsing (the adapter) feeds the
-uniform normalize step. The third-party DROP (M1.2) and encrypt + `content_hmac` dedupe + embed +
-persist (M1.3) layer on after this returns. No content is logged (rule 1).
+`run_ingestion` runs the uniform pipeline: per-source parse (the adapter) → normalize →
+third-party drop (rule 5). Encrypt + `content_hmac` dedupe + embed + persist (M1.3) layer on
+after this returns. No content is logged (rule 1).
 """
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 import py3langid as langid
@@ -62,7 +63,18 @@ def normalize(record: ParsedTextRecord, *, platform: Platform) -> CanonicalTextI
     )
 
 
+def drop_third_party(items: Iterable[CanonicalTextItem]) -> list[CanonicalTextItem]:
+    """Discard content the subject did not author (rule 5), before encrypt/embed/persist.
+
+    Fail-closed: only items explicitly marked `is_subject_authored` survive — uncertain authorship
+    is set false by the adapter and dropped here, so third-party content never reaches storage or
+    the embedding index (third-party-drop.md). Intra-item quote scrubbing is per-source (M1.4).
+    """
+    return [item for item in items if item.is_subject_authored]
+
+
 def run_ingestion(adapter: SourceAdapter) -> list[CanonicalTextItem]:
-    """Parse a source and normalize it to canonical text items (parsed → canonical)."""
+    """Parse → normalize → drop third-party: the subject's own canonical items, ready for M1.3."""
     normalized = (normalize(record, platform=adapter.platform) for record in adapter.parse())
-    return [item for item in normalized if item is not None]
+    canonical = [item for item in normalized if item is not None]
+    return drop_third_party(canonical)
