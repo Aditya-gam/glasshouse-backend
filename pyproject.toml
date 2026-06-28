@@ -19,6 +19,7 @@ dependencies = [
     "pgvector>=0.3",
     "pyjwt[crypto]>=2.13.0",
     "svix>=1.96.1",
+    "py3langid>=0.3",
 ]
 
 [dependency-groups]
@@ -50,7 +51,7 @@ strict = true
 
 [[tool.mypy.overrides]]
 # These ship no type information; don't fail strict mode on third-party stubs.
-module = ["testcontainers.*", "asyncpg.*", "scalar_fastapi.*", "pgvector.*"]
+module = ["testcontainers.*", "asyncpg.*", "scalar_fastapi.*", "pgvector.*", "py3langid.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
