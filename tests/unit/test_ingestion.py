@@ -54,18 +54,6 @@ def test_parsed_records_become_canonical_items() -> None:
     assert first.is_subject_authored is True
 
 
-def test_authorship_flag_is_preserved_not_dropped() -> None:
-    # M1.1 carries is_subject_authored through unchanged; the third-party DROP is M1.2.
-    records = [
-        ParsedTextRecord(
-            text="A third party wrote this English sentence.", is_subject_authored=False
-        )
-    ]
-    items = run_ingestion(_FakeAdapter(records))
-    assert len(items) == 1
-    assert items[0].is_subject_authored is False
-
-
 def test_language_is_detected_per_item() -> None:
     items = run_ingestion(
         _FakeAdapter(
