@@ -165,10 +165,7 @@ def seeded(rls_container: PostgresContainer) -> dict[str, dict[str, uuid.UUID]]:
         autocommit=True,
     ) as conn:
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO attributes (code, label, value_type, match_method) "
-            "VALUES ('location', 'Location', 'geo_hier', 'judge')"
-        )
+        # `attributes` are seeded by migration 0005 (incl. 'location', used by the inference chain).
         return {name: _seed_chain(cur, user_id) for name, user_id in _USERS.items()}
 
 

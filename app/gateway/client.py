@@ -6,12 +6,21 @@ only the proxy's **virtual key** (provider keys live in the proxy). Calls name a
 the response against our schema. Privacy rule: never log request/response bodies (only metadata).
 """
 
+from typing import Protocol
+
 import instructor
 from openai import AsyncOpenAI
 
 from app.core.config import GatewaySettings, get_gateway_settings
-from app.domain.output_schema import RawAttributeGuess
+from app.domain.output_schema import RawAttributeGuess, RawProfilerOutput
+from app.gateway.prompts import ATTACK_TEXT_SYSTEM
 from app.gateway.slots import Slot
+
+
+class Profiler(Protocol):
+    """The joint-pass capability the attack service needs (GatewayClient + test fakes conform)."""
+
+    async def profile_all(self, *, content: str) -> list[RawAttributeGuess]: ...
 
 
 class GatewayClient:
@@ -43,3 +52,22 @@ class GatewayClient:
             ],
         )
         return guess
+
+    async def profile_all(self, *, content: str) -> list[RawAttributeGuess]:
+        """The joint pass: one profiler-slot call inferring all 8 attributes (M1.7).
+
+        `content` is the datamarked user prompt (gateway/prompts.build_user_prompt); the system
+        prompt is `attack_text_v1`. Returns the emission guesses; the normalizer canonicalizes them.
+        """
+        slot: Slot = "profiler"
+        output: RawProfilerOutput = await self._client.chat.completions.create(
+            model=slot,
+            response_model=RawProfilerOutput,
+            max_retries=self._settings.gateway_max_retries,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": ATTACK_TEXT_SYSTEM},
+                {"role": "user", "content": content},
+            ],
+        )
+        return output.guesses
