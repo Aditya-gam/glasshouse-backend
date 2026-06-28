@@ -16,6 +16,7 @@ dependencies = [
     "instructor>=1.6",
     "openai>=1.50",
     "scalar-fastapi>=1.0",
+    "pgvector>=0.3",
 ]
 
 [dependency-groups]
@@ -46,7 +47,7 @@ strict = true
 
 [[tool.mypy.overrides]]
 # These ship no type information; don't fail strict mode on third-party stubs.
-module = ["testcontainers.*", "asyncpg.*", "scalar_fastapi.*"]
+module = ["testcontainers.*", "asyncpg.*", "scalar_fastapi.*", "pgvector.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
