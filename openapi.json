@@ -4262,7 +4262,7 @@
     },
     "/webhooks/clerk": {
       "post": {
-        "description": "Svix signature-verified; handles user.created/deleted + org/membership sync. Idempotent.",
+        "description": "Svix-verified; syncs user.created/updated/deleted into the users mirror. Idempotent.",
         "operationId": "clerk_webhook_webhooks_clerk_post",
         "responses": {
           "204": {

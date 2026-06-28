@@ -17,3 +17,22 @@ async def get_user_id_by_clerk_id(conn: AsyncConnection, clerk_user_id: str) -> 
         return None
     user_id: UUID = row[0]
     return user_id
+
+
+async def upsert_user(conn: AsyncConnection, clerk_user_id: str, email: str | None) -> None:
+    """Insert or update the users mirror for a Clerk subject (idempotent)."""
+    await conn.execute(
+        text(
+            "INSERT INTO users (clerk_user_id, email) VALUES (:cid, :email) "
+            "ON CONFLICT (clerk_user_id) DO UPDATE SET email = EXCLUDED.email"
+        ),
+        {"cid": clerk_user_id, "email": email},
+    )
+
+
+async def delete_user_by_clerk_id(conn: AsyncConnection, clerk_user_id: str) -> None:
+    """Delete the user; FK cascades drop owned rows + the DEK (crypto-shred). Idempotent."""
+    await conn.execute(
+        text("DELETE FROM users WHERE clerk_user_id = :cid"),
+        {"cid": clerk_user_id},
+    )

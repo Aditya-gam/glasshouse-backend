@@ -18,6 +18,7 @@ dependencies = [
     "scalar-fastapi>=1.0",
     "pgvector>=0.3",
     "pyjwt[crypto]>=2.13.0",
+    "svix>=1.96.1",
 ]
 
 [dependency-groups]

@@ -48,6 +48,7 @@ class AuthSettings(BaseSettings):
     clerk_jwks_url: str | None = None
     clerk_issuer: str | None = None
     clerk_audience: str | None = None
+    clerk_webhook_secret: str | None = None
 
 
 @lru_cache
