@@ -7,7 +7,12 @@ import httpx
 import pytest
 
 from app.core.config import get_gateway_settings
-from app.domain.output_schema import AttributeCode, RawAttributeGuess, RawCandidate
+from app.domain.output_schema import (
+    AttributeCode,
+    RawAttributeGuess,
+    RawCandidate,
+    RawProfilerOutput,
+)
 from app.gateway.client import GatewayClient
 
 # Minimal tracer prompt; the real attack prompt is built at M1.7 (prompts/attack-text.md).
@@ -42,6 +47,24 @@ async def test_profile_attribute_delegates_to_instructor(monkeypatch: pytest.Mon
     assert kwargs["response_model"] is RawAttributeGuess
     assert kwargs["temperature"] == 0
     assert kwargs["max_retries"] == 2
+
+
+async def test_profile_all_returns_joint_guesses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The joint pass asks for RawProfilerOutput at the profiler slot and returns its guesses."""
+    client = GatewayClient()
+    canned = RawProfilerOutput(
+        guesses=[RawAttributeGuess(attribute="location", status="abstained", candidates=[])]
+    )
+    mock_create = AsyncMock(return_value=canned)
+    monkeypatch.setattr(client._client.chat.completions, "create", mock_create)
+
+    guesses = await client.profile_all(content="<subject_content>…</subject_content>")
+
+    assert guesses == canned.guesses
+    assert mock_create.await_args is not None
+    kwargs = mock_create.await_args.kwargs
+    assert kwargs["model"] == "profiler" and kwargs["response_model"] is RawProfilerOutput
+    assert kwargs["temperature"] == 0
 
 
 def _proxy_reachable() -> bool:

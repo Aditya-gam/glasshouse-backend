@@ -43,5 +43,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    codes = ", ".join(f"'{spec.code}'" for spec in ATTRIBUTES)
-    op.execute(f"DELETE FROM attributes WHERE code IN ({codes})")  # noqa: S608 — fixed enum codes
+    delete = text("DELETE FROM attributes WHERE code = :code")
+    for spec in ATTRIBUTES:
+        op.execute(delete.bindparams(code=spec.code))
