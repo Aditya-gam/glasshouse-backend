@@ -5,7 +5,7 @@ CI runs against a real testcontainers Postgres with the gateway faked via depend
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -119,6 +119,51 @@ async def test_idempotency_key_dedupes_run(
             )
         ).scalar_one()
     assert count == 1
+
+
+async def test_run_events_streams_status(
+    client: AsyncClient, app_engine: AsyncEngine, seed_user: SeedUser, master_key: str
+) -> None:
+    user_a = await seed_user()
+    await _seed_item(app_engine, user_a, "Gas Works Park on a PST morning.", master_key)
+    headers = {"X-Dev-User-Id": str(user_a)}
+    created = await client.post(
+        "/v1/runs", json={"type": "attack", "params": {"attribute": "location"}}, headers=headers
+    )
+    run_id = created.json()["run_id"]
+
+    resp = await client.get(f"/v1/runs/{run_id}/events", headers=headers)
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    # The tracer run is already terminal: one status event then a closing done event.
+    assert "event: status" in body
+    assert "event: done" in body
+    assert "succeeded" in body
+
+
+async def test_run_events_404_for_unknown_run(client: AsyncClient, seed_user: SeedUser) -> None:
+    user_a = await seed_user()
+    resp = await client.get(f"/v1/runs/{uuid4()}/events", headers={"X-Dev-User-Id": str(user_a)})
+    assert resp.status_code == 404
+
+
+async def test_run_events_invisible_to_other_user(
+    client: AsyncClient, app_engine: AsyncEngine, seed_user: SeedUser, master_key: str
+) -> None:
+    user_a = await seed_user()
+    user_b = await seed_user()
+    await _seed_item(app_engine, user_a, "A PST morning walk.", master_key)
+    created = await client.post(
+        "/v1/runs",
+        json={"type": "attack", "params": {"attribute": "location"}},
+        headers={"X-Dev-User-Id": str(user_a)},
+    )
+    run_id = created.json()["run_id"]
+
+    resp = await client.get(f"/v1/runs/{run_id}/events", headers={"X-Dev-User-Id": str(user_b)})
+    assert resp.status_code == 404  # RLS-hidden → 404, not another user's stream
 
 
 async def test_run_invisible_to_other_user(client: AsyncClient, seed_user: SeedUser) -> None:

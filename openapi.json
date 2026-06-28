@@ -4045,7 +4045,7 @@
     },
     "/v1/runs/{run_id}/events": {
       "get": {
-        "description": "SSE live progress \u2014 lands with M5.2 (poll + SSE).",
+        "description": "SSE stream of run status; 404 if absent or RLS-hidden.\n\nAuth is the standard bearer \u2014 the FE proxies the stream and injects it server-side (decision\n(c)), since browser EventSource can't set headers.",
         "operationId": "run_events_v1_runs__run_id__events_get",
         "parameters": [
           {
@@ -4079,13 +4079,9 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RunStatus"
-                }
-              }
+              "text/event-stream": {}
             },
-            "description": "Successful Response"
+            "description": "SSE stream of run status"
           },
           "400": {
             "content": {
