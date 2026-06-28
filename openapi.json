@@ -1303,6 +1303,13 @@
         "title": "Severity",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "description": "Clerk session JWT",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -1447,6 +1454,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Erase Account",
         "tags": [
           "account"
@@ -1541,6 +1553,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Account",
         "tags": [
           "account"
@@ -1646,6 +1663,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Revoke Consent",
         "tags": [
           "account"
@@ -1749,6 +1771,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Grant Consent",
         "tags": [
           "account"
@@ -1845,6 +1872,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Export Account",
         "tags": [
           "account"
@@ -1950,6 +1982,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Set Retention",
         "tags": [
           "account"
@@ -2049,6 +2086,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Connectors",
         "tags": [
           "connectors"
@@ -2153,6 +2195,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Start Connector",
         "tags": [
           "connectors"
@@ -2249,6 +2296,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Connector Callback",
         "tags": [
           "connectors"
@@ -2347,6 +2399,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Revoke Connector",
         "tags": [
           "connectors"
@@ -2452,6 +2509,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Sync Connector",
         "tags": [
           "connectors"
@@ -2709,6 +2771,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Imports",
         "tags": [
           "imports"
@@ -2803,6 +2870,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Import",
         "tags": [
           "imports"
@@ -2908,6 +2980,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Import",
         "tags": [
           "imports"
@@ -3041,6 +3118,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Inferences",
         "tags": [
           "inferences"
@@ -3147,6 +3229,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Inference",
         "tags": [
           "inferences"
@@ -3262,6 +3349,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Confirm Inference",
         "tags": [
           "inferences"
@@ -3378,6 +3470,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Remediation",
         "tags": [
           "inferences"
@@ -3494,6 +3591,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Remediations",
         "tags": [
           "remediations"
@@ -3600,6 +3702,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Remediation",
         "tags": [
           "remediations"
@@ -3700,6 +3807,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Runs",
         "tags": [
           "runs"
@@ -3804,6 +3916,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Run",
         "tags": [
           "runs"
@@ -3910,6 +4027,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Read Run",
         "tags": [
           "runs"
@@ -4016,6 +4138,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Run Events",
         "tags": [
           "runs"
@@ -4122,6 +4249,11 @@
             "description": "Not Implemented"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Cancel Run",
         "tags": [
           "runs"

@@ -40,6 +40,16 @@ class CryptoSettings(BaseSettings):
     master_key: str | None = None
 
 
+class AuthSettings(BaseSettings):
+    """Clerk JWT verification. JWKS is cached; issuer/audience verified when configured."""
+
+    model_config = _ENV
+
+    clerk_jwks_url: str | None = None
+    clerk_issuer: str | None = None
+    clerk_audience: str | None = None
+
+
 @lru_cache
 def get_app_settings() -> AppSettings:
     return AppSettings()
@@ -53,3 +63,8 @@ def get_database_settings() -> DatabaseSettings:
 @lru_cache
 def get_crypto_settings() -> CryptoSettings:
     return CryptoSettings()
+
+
+@lru_cache
+def get_auth_settings() -> AuthSettings:
+    return AuthSettings()
