@@ -1,0 +1,40 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+# release-please opens/maintains the Release PR and, on its merge, cuts the tag + release.
+permissions:
+  contents: write
+  pull-requests: write
+
+# Never cancel an in-flight release run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # The Release PR must be opened by a PAT (not the built-in GITHUB_TOKEN) so it
+      # triggers the required CI checks and can merge through branch protection. Until
+      # the secret exists, skip gracefully instead of failing the run.
+      - name: Check for release token
+        id: guard
+        env:
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -n "${RELEASE_PLEASE_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::RELEASE_PLEASE_TOKEN secret not set — skipping release-please. Add the PAT to enable releases."
+          fi
+      - if: steps.guard.outputs.present == 'true'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
