@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One run per ref; new pushes cancel the old (CI only — never deploys).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_FROZEN: "1"
+
+jobs:
+  static:
+    name: Lint · Format · Types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff check --output-format=github .
+      - run: uv run ruff format --check .
+      - run: uv run mypy .
+
+  semgrep:
+    name: Semgrep (SAST · secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: >
+          uvx semgrep scan
+          --config p/python --config p/security-audit --config p/secrets
+          --error --metrics off
+
+  test:
+    name: Tests (testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest -q
+
+# TODO(M2.6 / M5.1 / M7.3): extend the gate with Trivy (distroless image scan),
+# Schemathesis (OpenAPI fuzz), the SynthPAI eval-floor, and SHA-pinned actions.
