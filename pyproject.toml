@@ -21,6 +21,8 @@ dependencies = [
     "svix>=1.96.1",
     "py3langid>=0.3",
     "fastembed>=0.4",
+    "presidio-analyzer>=2.2",
+    "tiktoken>=0.8",
 ]
 
 [dependency-groups]
@@ -59,6 +61,8 @@ module = [
     "pgvector.*",
     "py3langid.*",
     "fastembed.*",
+    "presidio_analyzer.*",
+    "tiktoken.*",
 ]
 ignore_missing_imports = true
 

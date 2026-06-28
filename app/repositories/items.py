@@ -6,6 +6,7 @@ the DEK never enters this process. Every statement runs under the caller's RLS
 context (see `app.db.rls`), which scopes rows to the owner.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
@@ -116,3 +117,46 @@ async def insert_canonical_item(
         return None  # ON CONFLICT DO NOTHING — same content already stored (deduped)
     item_id: UUID = row[0]
     return item_id
+
+
+# --- retrieval reads (M1.6) -----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RetrievedItem:
+    """One item the Retriever selected: its id + decrypted text (the Profiler's evidence)."""
+
+    id: UUID
+    text: str
+
+
+async def list_items_with_text(conn: AsyncConnection, master_key: str) -> list[RetrievedItem]:
+    """All of the current user's items (id + decrypted text), RLS-scoped. Recall-first source."""
+    result = await conn.execute(
+        text("SELECT id, decrypt_field(owner_user_id, text_ct, :mk) FROM items"),
+        {"mk": master_key},
+    )
+    return [RetrievedItem(id=row[0], text=row[1]) for row in result]
+
+
+async def search_item_ids_by_embedding(
+    conn: AsyncConnection, query_embedding: list[float], k: int
+) -> list[UUID]:
+    """The k item ids most similar to the query vector (pgvector cosine via HNSW), RLS-scoped."""
+    result = await conn.execute(
+        text(
+            "SELECT id FROM items WHERE embedding IS NOT NULL "
+            "ORDER BY embedding <=> CAST(:q AS vector) LIMIT :k"
+        ),
+        {"q": _to_pgvector(query_embedding), "k": k},
+    )
+    return [row[0] for row in result]
+
+
+async def recent_item_ids(conn: AsyncConnection, n: int) -> list[UUID]:
+    """The n most recent item ids (by post time, falling back to ingest time), RLS-scoped."""
+    result = await conn.execute(
+        text("SELECT id FROM items ORDER BY COALESCE(posted_at, created_at) DESC LIMIT :n"),
+        {"n": n},
+    )
+    return [row[0] for row in result]
