@@ -1,5 +1,7 @@
 """FastAPI application entrypoint."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
@@ -8,9 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1 import runs
 from app.core.config import get_app_settings
-from app.db.session import get_session
+from app.db.session import dispose_engines, get_session
 
-app = FastAPI(title="Glasshouse")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Manage process-lifetime resources — dispose the DB engine pools on shutdown."""
+    yield
+    await dispose_engines()
+
+
+app = FastAPI(title="Glasshouse", lifespan=lifespan)
 app.include_router(runs.router)
 
 
