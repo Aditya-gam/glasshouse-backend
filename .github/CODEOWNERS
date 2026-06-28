@@ -1,0 +1,5 @@
+# Code owners for glasshouse-backend.
+# Auto-requested for review on matching PRs. Not a hard merge gate (solo repo —
+# branch protection requires status checks, not approvals).
+
+* @Aditya-gam
