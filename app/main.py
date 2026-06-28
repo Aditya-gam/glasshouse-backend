@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import HTMLResponse
+from scalar_fastapi import get_scalar_api_reference
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +24,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Glasshouse", lifespan=lifespan)
 app.include_router(runs.router)
+
+
+@app.get("/scalar", include_in_schema=False)
+async def scalar_docs() -> HTMLResponse:
+    """Interactive API reference (Scalar), rendered from the OpenAPI schema."""
+    return get_scalar_api_reference(
+        openapi_url=app.openapi_url or "/openapi.json",
+        title=app.title,
+    )
 
 
 @app.get("/healthz")

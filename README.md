@@ -1,5 +1,7 @@
 # Glasshouse — Backend
 
+![CI](https://img.shields.io/github/actions/workflow/status/Aditya-gam/glasshouse-backend/ci.yml?label=CI) ![python](https://img.shields.io/badge/python-3.12-3776AB) ![license](https://img.shields.io/badge/license-MIT-blue)
+
 FastAPI service for the **Attack → Measure → Defend** engine. Part of the
 [glasshouse](../Privacy-Exposure-App) project — the full spec (`docs/`) and the
 UI prototype live in the hub repo.
@@ -14,6 +16,8 @@ make check       # ruff (lint+format) + mypy --strict
 ```
 The model egress (LiteLLM Proxy + Ollama) is declared under the `gateway` compose profile and
 wired up at T3/M1.5: `docker compose --profile gateway up`. See `docs/` in the hub for the spec.
+
+Interactive API reference: **`/scalar`** (rendered from the OpenAPI schema); FastAPI's `/docs` and `/redoc` are also available.
 
 **Stack:** FastAPI · SQLAlchemy 2.0 (async) + Alembic · `arq` (Redis) workers · pydantic v2 ·
 `instructor` · `uv`. Layered (Clean Architecture): `app/{api,services,repositories,domain,workers,db,...}`.
