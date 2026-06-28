@@ -1,4 +1,7 @@
-# Local dev stack. LiteLLM proxy + Ollama join at M1.5 (gateway); Ollama runs on the host.
+# Local dev stack.
+#   default profile : db + redis + api (hot-reload)
+#   gateway profile : LiteLLM Proxy + Ollama — `docker compose --profile gateway up` (wired at T3/M1.5)
+# The arq worker service joins the default profile at M1.9 (WorkerSettings).
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -27,5 +30,45 @@ services:
       timeout: 3s
       retries: 10
 
+  api:
+    build:
+      context: .
+      target: dev
+    environment:
+      DATABASE_URL: postgresql+asyncpg://glasshouse:glasshouse@db:5432/glasshouse
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app                # bind-mount source for hot-reload
+      - venv:/app/.venv       # mask the host path; seeded from the image's baked venv
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # --- gateway profile: the model egress; real config + slots land at T3/M1.5 ---
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    profiles: ["gateway"]
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./gateway/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["gateway"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
 volumes:
   pgdata:
+  venv:
+  ollama:
