@@ -1190,19 +1190,8 @@
         "type": "object"
       },
       "RunCreate": {
-        "description": "POST /v1/runs body. `params` is type-specific; idempotency_key dedupes retries.",
+        "description": "POST /v1/runs body. `params` is type-specific.\n\nRetries are deduped via the `Idempotency-Key` request header (api-design rule), not a field.",
         "properties": {
-          "idempotency_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Idempotency Key"
-          },
           "params": {
             "additionalProperties": true,
             "default": {},
@@ -3818,9 +3807,25 @@
         ]
       },
       "post": {
-        "description": "Create a run, execute it synchronously (M1.9 \u2192 queue), and return 202 + run_id.\n\nOnly `attack` is live for the tracer; `eval`/`remediation` arrive with M2/M3.",
+        "description": "Create a run, execute it synchronously (M1.9 \u2192 queue), and return 202 + run_id.\n\nA repeated `Idempotency-Key` returns the original run without re-running it (api-design rule).\nOnly `attack` is live for the tracer; `eval`/`remediation` arrive with M2/M3.",
         "operationId": "create_run_v1_runs_post",
         "parameters": [
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
           {
             "in": "header",
             "name": "x-dev-user-id",

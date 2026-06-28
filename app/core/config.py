@@ -7,6 +7,7 @@ Gateway settings move under pydantic-settings with the M1.5 gateway rebuild.
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -51,6 +52,24 @@ class AuthSettings(BaseSettings):
     clerk_webhook_secret: str | None = None
 
 
+class CorsSettings(BaseSettings):
+    """Browser CORS for the Next.js frontend. Origins are an allowlist (never ``*`` with creds)."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", env_prefix="CORS_", extra="ignore"
+    )
+
+    allow_origins: list[str] = ["http://localhost:3000"]
+
+    @field_validator("allow_origins", mode="before")
+    @classmethod
+    def _split_csv(cls, value: object) -> object:
+        """Accept a comma-separated env string (``CORS_ALLOW_ORIGINS``) as well as a JSON list."""
+        if isinstance(value, str) and not value.startswith("["):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+
 @lru_cache
 def get_app_settings() -> AppSettings:
     return AppSettings()
@@ -69,3 +88,8 @@ def get_crypto_settings() -> CryptoSettings:
 @lru_cache
 def get_auth_settings() -> AuthSettings:
     return AuthSettings()
+
+
+@lru_cache
+def get_cors_settings() -> CorsSettings:
+    return CorsSettings()

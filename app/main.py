@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from scalar_fastapi import get_scalar_api_reference
 from sqlalchemy import text
@@ -22,7 +23,7 @@ from app.api.v1 import (
     webhooks,
 )
 from app.api.v1.schemas import Problem
-from app.core.config import get_app_settings
+from app.core.config import get_app_settings, get_cors_settings
 from app.db.session import dispose_engines, get_session
 
 
@@ -35,6 +36,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Glasshouse", lifespan=lifespan)
 register_error_handlers(app)
+
+# Browser CORS for the Next.js frontend. Explicit allowlist (env-configurable) — required for the
+# generated client + TanStack Query calls from the app origin; credentials on for cookie/bearer.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_cors_settings().allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Location"],
+)
 
 # Every route can surface the one problem+json error shape; documenting it keeps the contract
 # conformant (incl. the 501 contract-first stubs). Content type is application/problem+json.

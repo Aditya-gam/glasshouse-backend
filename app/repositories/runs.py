@@ -25,17 +25,49 @@ async def create_run(
     run_type: str,
     status: str,
     engine_version: str | None,
+    idempotency_key: str | None = None,
 ) -> UUID:
     """Insert a run for the current user; return its id."""
     result = await conn.execute(
         text(
-            "INSERT INTO runs (owner_user_id, type, status, engine_version) "
-            "VALUES (:owner, :type, :status, :ev) RETURNING id"
+            "INSERT INTO runs (owner_user_id, type, status, engine_version, idempotency_key) "
+            "VALUES (:owner, :type, :status, :ev, :idem) RETURNING id"
         ),
-        {"owner": owner_user_id, "type": run_type, "status": status, "ev": engine_version},
+        {
+            "owner": owner_user_id,
+            "type": run_type,
+            "status": status,
+            "ev": engine_version,
+            "idem": idempotency_key,
+        },
     )
     run_id: UUID = result.scalar_one()
     return run_id
+
+
+async def get_run_by_idempotency_key(conn: AsyncConnection, idempotency_key: str) -> RunRow | None:
+    """Return a prior run created with this key (RLS-scoped to the caller), or None.
+
+    Lets `POST /v1/runs` dedupe client retries — the same key returns the same run, no re-run.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT id, type, status, engine_version, created_at, finished_at "
+            "FROM runs WHERE idempotency_key = :idem"
+        ),
+        {"idem": idempotency_key},
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return RunRow(
+        id=row[0],
+        type=row[1],
+        status=row[2],
+        engine_version=row[3],
+        created_at=row[4],
+        finished_at=row[5],
+    )
 
 
 async def set_run_status(

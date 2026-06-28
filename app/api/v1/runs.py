@@ -7,7 +7,7 @@ POST creates and (for the tracer) runs the attack synchronously, returning the p
 from typing import Annotated, get_args
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.api.deps import get_current_user, get_gateway_client, get_master_key, get_scoped_session
@@ -30,9 +30,11 @@ async def create_run(
     gateway: Annotated[GatewayClient, Depends(get_gateway_client)],
     user_id: Annotated[UUID, Depends(get_current_user)],
     master_key: Annotated[str, Depends(get_master_key)],
+    idempotency_key: Annotated[str | None, Header()] = None,
 ) -> RunAccepted:
     """Create a run, execute it synchronously (M1.9 → queue), and return 202 + run_id.
 
+    A repeated `Idempotency-Key` returns the original run without re-running it (api-design rule).
     Only `attack` is live for the tracer; `eval`/`remediation` arrive with M2/M3.
     """
     if body.type != "attack":
@@ -40,12 +42,17 @@ async def create_run(
     attribute = str(body.params.get("attribute", _DEFAULT_ATTRIBUTE))
     if attribute not in get_args(AttributeCode):
         raise NotFound(f"unknown attribute '{attribute}'")
+    if idempotency_key is not None:
+        existing = await runs_repo.get_run_by_idempotency_key(conn, idempotency_key)
+        if existing is not None:
+            return RunAccepted(run_id=existing.id, status=existing.status)
     run_id = await run_attack(
         conn,
         gateway,
         owner_user_id=user_id,
         attribute=attribute,  # type: ignore[arg-type]  # validated against AttributeCode above
         master_key=master_key,
+        idempotency_key=idempotency_key,
     )
     return RunAccepted(run_id=run_id, status="succeeded")
 
