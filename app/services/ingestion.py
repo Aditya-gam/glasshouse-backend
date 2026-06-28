@@ -6,12 +6,19 @@ after this returns. No content is logged (rule 1).
 """
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 import py3langid as langid
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.ingestion.base import ParsedTextRecord, Platform, SourceAdapter
+from app.ingestion.base import Method, ParsedTextRecord, Platform, SourceAdapter
 from app.ingestion.canonical import CanonicalTextItem
+from app.repositories import import_sources as import_sources_repo
+from app.repositories import items as items_repo
+from app.repositories import profiles as profiles_repo
+from app.retrieval.embedder import Embedder
 
 
 def _offset_label(dt: datetime) -> str | None:
@@ -78,3 +85,75 @@ def run_ingestion(adapter: SourceAdapter) -> list[CanonicalTextItem]:
     normalized = (normalize(record, platform=adapter.platform) for record in adapter.parse())
     canonical = [item for item in normalized if item is not None]
     return drop_third_party(canonical)
+
+
+@dataclass(frozen=True)
+class PersistResult:
+    """Outcome of persisting one ingestion run (counts only — never content)."""
+
+    import_source_id: UUID | None
+    inserted: int
+    deduped: int
+
+
+async def persist_items(
+    conn: AsyncConnection,
+    embedder: Embedder,
+    *,
+    owner_user_id: UUID,
+    items: list[CanonicalTextItem],
+    method: Method,
+    master_key: str,
+) -> PersistResult:
+    """Embed + encrypt + dedupe-persist the subject's canonical items (M1.3), RLS-scoped to owner.
+
+    Assumes the third-party drop already ran (`run_ingestion`). Creates the `self` profile + one
+    `import_source` for provenance, then inserts each item; re-imports of the same content are
+    skipped (keyed-HMAC dedupe). No content is logged.
+    """
+    if not items:
+        return PersistResult(import_source_id=None, inserted=0, deduped=0)
+    profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
+    import_source_id = await import_sources_repo.create_import_source(
+        conn, profile_id, platform=items[0].platform, method=method
+    )
+    vectors = embedder.embed([item.text for item in items])
+    inserted = 0
+    for item, vector in zip(items, vectors, strict=True):
+        item_id = await items_repo.insert_canonical_item(
+            conn,
+            profile_id=profile_id,
+            owner_user_id=owner_user_id,
+            import_source_id=import_source_id,
+            plaintext=item.text,
+            embedding=vector,
+            posted_at=item.posted_at,
+            original_tz=item.original_tz,
+            is_subject_authored=item.is_subject_authored,
+            master_key=master_key,
+        )
+        if item_id is not None:
+            inserted += 1
+    return PersistResult(
+        import_source_id=import_source_id, inserted=inserted, deduped=len(items) - inserted
+    )
+
+
+async def ingest_and_persist(
+    conn: AsyncConnection,
+    embedder: Embedder,
+    adapter: SourceAdapter,
+    *,
+    owner_user_id: UUID,
+    master_key: str,
+) -> PersistResult:
+    """Full ingestion (M1.1–M1.3): parse → normalize → drop → embed + encrypt + dedupe-persist."""
+    items = run_ingestion(adapter)
+    return await persist_items(
+        conn,
+        embedder,
+        owner_user_id=owner_user_id,
+        items=items,
+        method=adapter.method,
+        master_key=master_key,
+    )
