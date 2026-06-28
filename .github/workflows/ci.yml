@@ -52,5 +52,27 @@ jobs:
       - run: uv sync
       - run: uv run pytest -q
 
-# TODO(M2.6 / M5.1 / M7.3): extend the gate with Trivy (distroless image scan),
-# Schemathesis (OpenAPI fuzz), the SynthPAI eval-floor, and SHA-pinned actions.
+  openapi:
+    name: OpenAPI contract (publish + drift-guard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Regenerate openapi.json and fail if the committed copy is stale
+        run: |
+          uv run python -m scripts.export_openapi
+          git diff --quiet openapi.json || {
+            echo "::error::openapi.json is stale — run 'make openapi' and commit the result."
+            git --no-pager diff openapi.json
+            exit 1
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: openapi.json
+
+# TODO(M2.6 / M7.3): extend the gate with Trivy (distroless image scan),
+# the SynthPAI eval-floor, and SHA-pinned actions. (Schemathesis runs in the test job.)

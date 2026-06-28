@@ -2,7 +2,7 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help sync hooks dev up down logs test migrate lint fmt typecheck check
+.PHONY: help sync hooks dev up down logs test migrate openapi lint fmt typecheck check
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -32,6 +32,9 @@ test: ## Run the test suite (spins a real Postgres via testcontainers)
 
 migrate: ## Apply database migrations (available from M0.4)
 	uv run alembic upgrade head
+
+openapi: ## Export the OpenAPI schema to openapi.json (the published contract)
+	uv run python -m scripts.export_openapi
 
 lint: ## Lint + format check
 	uv run ruff check .

@@ -28,6 +28,7 @@ dev = [
     "testcontainers[postgres]>=4.8",
     "psycopg[binary]>=3.2",   # sync driver for the testcontainers readiness wait
     "pre-commit>=4.0",
+    "schemathesis>=4.21.10",
 ]
 
 [tool.ruff]
