@@ -6,10 +6,12 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1 import runs
 from app.core.config import get_settings
 from app.db.session import get_session
 
 app = FastAPI(title="Glasshouse")
+app.include_router(runs.router)
 
 
 @app.get("/healthz")
