@@ -17,7 +17,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.auth import clerk
-from app.core.config import get_app_settings, get_crypto_settings
+from app.core.config import get_app_settings
+from app.db import crypto
 from app.db.rls import set_rls_context
 from app.db.session import app_engine
 from app.db.session import engine as owner_engine
@@ -72,13 +73,13 @@ async def get_current_user(
 
 
 def get_master_key() -> str:
-    """The field-encryption master key; fail closed if it isn't configured."""
-    key = get_crypto_settings().master_key
-    if not key:
+    """The field-encryption master key (via the crypto KMS-unwrap seam); 500 if not configured."""
+    try:
+        return crypto.get_master_key()
+    except crypto.MasterKeyUnavailableError:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="server misconfigured"
-        )
-    return key
+        ) from None
 
 
 def get_gateway_client() -> GatewayClient:
