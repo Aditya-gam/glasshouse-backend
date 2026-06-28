@@ -15,11 +15,11 @@ from uuid import UUID
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from app.core.config import get_settings
+from app.core.config import get_app_settings, get_crypto_settings, get_database_settings
 from app.db.rls import set_rls_context
 from app.gateway.client import GatewayClient
 
-_app_engine: AsyncEngine = create_async_engine(get_settings().app_database_url)
+_app_engine: AsyncEngine = create_async_engine(get_database_settings().app_database_url)
 
 # The dev header is a stand-in until Clerk (M0.6). Honour it ONLY in non-prod environments so
 # it can never become a production auth bypass — fail closed everywhere else.
@@ -28,7 +28,7 @@ _DEV_AUTH_ENVIRONMENTS = frozenset({"local", "dev", "test"})
 
 def get_current_user(x_dev_user_id: Annotated[UUID | None, Header()] = None) -> UUID:
     """Dev auth seam: the user id comes from the `X-Dev-User-Id` header (M0.6 → Clerk JWT)."""
-    if get_settings().environment not in _DEV_AUTH_ENVIRONMENTS:
+    if get_app_settings().environment not in _DEV_AUTH_ENVIRONMENTS:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication not configured"
         )
@@ -44,7 +44,7 @@ def get_app_engine() -> AsyncEngine:
 
 def get_master_key() -> str:
     """The field-encryption master key; fail closed if it isn't configured."""
-    key = get_settings().master_key
+    key = get_crypto_settings().master_key
     if not key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="server misconfigured"

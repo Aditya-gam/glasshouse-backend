@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1 import runs
-from app.core.config import get_settings
+from app.core.config import get_app_settings
 from app.db.session import get_session
 
 app = FastAPI(title="Glasshouse")
@@ -17,7 +17,7 @@ app.include_router(runs.router)
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     """Liveness probe — used by the container HEALTHCHECK and the load balancer."""
-    settings = get_settings()
+    settings = get_app_settings()
     return {"status": "ok", "app": settings.app_name, "env": settings.environment}
 
 
