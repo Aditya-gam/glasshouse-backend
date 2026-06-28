@@ -50,21 +50,39 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS idx_items_owner_user_id ON items (owner_user_id);
 
--- Minimal inferences parent for the tracer bullet. owner_user_id is denormalized
--- here; M0.3 reworks RLS to go through profile_id, and run_id/profile_id become FKs
--- (to runs at M1.9, profiles at M0.3) — both nullable until those tables exist.
+-- The async unit of work. Tracer slice: owner_user_id is denormalized (M0.3 reworks RLS
+-- to go through profile_id), status is text (M0.4 adds the run_status_t enum), and the run
+-- executes synchronously (M1.9 moves it onto the arq queue) — the API shape is unchanged.
+CREATE TABLE IF NOT EXISTS runs (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_user_id   uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    type            text NOT NULL,   -- attack | eval | remediation
+    status          text NOT NULL,   -- queued | running | succeeded | failed | canceled
+    engine_version  text,
+    idempotency_key text,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    finished_at     timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_runs_owner_user_id ON runs (owner_user_id);
+
+-- Minimal inferences parent for the tracer bullet. owner_user_id is denormalized here;
+-- M0.3 reworks RLS to go through profile_id and profile_id becomes an FK (M0.3). top_value_text
+-- holds the leading candidate's value inline (non-sensitive here); M1.7 normalizes the ranked
+-- candidates/evidence into their own tables.
 CREATE TABLE IF NOT EXISTS inferences (
     id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_user_id  uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    run_id         uuid,
+    run_id         uuid REFERENCES runs (id) ON DELETE CASCADE,
     profile_id     uuid,
     attribute_code text NOT NULL,
     modality       text NOT NULL DEFAULT 'text',
     status         text NOT NULL DEFAULT 'inferred',
+    top_value_text text,
     reasoning_ct   bytea,                          -- T2 pgcrypto ciphertext (Art. 9-scrubbed)
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_inferences_owner_user_id ON inferences (owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_inferences_run_id ON inferences (run_id);
 
 -- ------------------------------------------------------------------- RLS --
 -- FORCE so the table owner is subject too. An unscoped session must match no rows:
@@ -82,6 +100,13 @@ ALTER TABLE inferences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inferences FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS inferences_owner_scope ON inferences;
 CREATE POLICY inferences_owner_scope ON inferences
+    USING (owner_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid)
+    WITH CHECK (owner_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid);
+
+ALTER TABLE runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE runs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS runs_owner_scope ON runs;
+CREATE POLICY runs_owner_scope ON runs
     USING (owner_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid)
     WITH CHECK (owner_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid);
 
@@ -142,7 +167,7 @@ AS $$
 $$;
 
 -- -------------------------------------------------------------- privileges --
-GRANT SELECT, INSERT, UPDATE, DELETE ON items, inferences TO glasshouse_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON items, inferences, runs TO glasshouse_app;
 -- Deliberately NO grant on data_keys → the app role cannot read key material.
 REVOKE ALL ON FUNCTION encrypt_field(uuid, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION decrypt_field(uuid, bytea, text) FROM PUBLIC;

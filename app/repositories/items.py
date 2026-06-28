@@ -46,3 +46,15 @@ async def list_item_ids(conn: AsyncConnection) -> list[UUID]:
     """All item ids visible under the current RLS context (empty if unscoped)."""
     result = await conn.execute(text("SELECT id FROM items ORDER BY created_at"))
     return [row[0] for row in result]
+
+
+async def get_items_text(conn: AsyncConnection, master_key: str) -> list[str]:
+    """Decrypted text of the current user's items, oldest first (the tracer's retrieval).
+
+    The embedding/recency Retriever replaces this all-items pass at M1.6.
+    """
+    result = await conn.execute(
+        text("SELECT decrypt_field(owner_user_id, text_ct, :mk) FROM items ORDER BY created_at"),
+        {"mk": master_key},
+    )
+    return [row[0] for row in result]
