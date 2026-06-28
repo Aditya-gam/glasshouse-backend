@@ -3,16 +3,16 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: iea
-      POSTGRES_PASSWORD: iea
-      POSTGRES_DB: iea
+      POSTGRES_USER: glasshouse
+      POSTGRES_PASSWORD: glasshouse
+      POSTGRES_DB: glasshouse
     ports:
       - "5432:5432"
     volumes:
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U iea -d iea"]
+      test: ["CMD-SHELL", "pg_isready -U glasshouse -d glasshouse"]
       interval: 5s
       timeout: 3s
       retries: 10

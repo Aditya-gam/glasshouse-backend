@@ -10,11 +10,11 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "inference-exposure-auditor"
+    app_name: str = "glasshouse"
     environment: str = "local"
 
     # Local dev uses the docker-compose Postgres; cloud values come from the environment.
-    database_url: str = "postgresql+asyncpg://iea:iea@localhost:5432/iea"
+    database_url: str = "postgresql+asyncpg://glasshouse:glasshouse@localhost:5432/glasshouse"
 
 
 @lru_cache

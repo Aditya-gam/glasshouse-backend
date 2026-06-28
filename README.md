@@ -1,7 +1,7 @@
-# Inference Exposure Auditor — Backend
+# Glasshouse — Backend
 
 FastAPI service for the **Attack → Measure → Defend** engine. Part of the
-[inference-exposure-auditor](../Privacy-Exposure-App) project — the full spec (`docs/`) and the
+[glasshouse](../Privacy-Exposure-App) project — the full spec (`docs/`) and the
 UI prototype live in the hub repo.
 
 ## Develop
