@@ -22,6 +22,7 @@ from sqlalchemy import (
     LargeBinary,
     Numeric,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -29,8 +30,8 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# OpenAI text-embedding-3-small (stack.md); items.embedding is invertible → personal data.
-_EMBEDDING_DIM = 1536
+# fastembed bge-small-en-v1.5 (local, $0); items.embedding is invertible → personal data.
+_EMBEDDING_DIM = 384
 
 # The only two native enums; all other controlled vocabularies are text + CHECK.
 role_t = SAEnum("owner", "admin", "analyst", "viewer", name="role_t")
@@ -153,6 +154,10 @@ class ImportSource(_UuidPk, _Timestamped, Base):
 
 class Item(_UuidPk, _Timestamped, Base):
     __tablename__ = "items"
+    # Keyed-HMAC dedupe is per-tenant: re-imports skip via ON CONFLICT on (owner_user_id, hmac).
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "content_hmac", name="uq_items_owner_content_hmac"),
+    )
 
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
     owner_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
@@ -162,6 +167,8 @@ class Item(_UuidPk, _Timestamped, Base):
     text_ct: Mapped[bytes] = mapped_column(LargeBinary)
     content_hmac: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(_EMBEDDING_DIM))
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    original_tz: Mapped[str | None] = mapped_column(Text)
     is_subject_authored: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
