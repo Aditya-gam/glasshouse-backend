@@ -50,7 +50,46 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync
-      - run: uv run pytest -q
+      - run: uv run pytest -q --cov=app --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+
+  sonar:
+    name: SonarCloud (Quality Gate)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      # The Quality Gate is a hard gate once SONAR_TOKEN exists; until then, skip gracefully
+      # (the SonarCloud project + token are a one-time human setup).
+      - name: Check for Sonar token
+        id: guard
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -n "${SONAR_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::SONAR_TOKEN not set — skipping SonarCloud. Add the secret to enable the Quality Gate."
+          fi
+      - if: steps.guard.outputs.present == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for accurate new-code detection
+      - if: steps.guard.outputs.present == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage
+      - if: steps.guard.outputs.present == 'true'
+        name: SonarQube Cloud scan + Quality Gate
+        # The pin below is the action's git commit SHA (not a token); Semgrep's secrets rule
+        # mistakes the 40-hex-near-"sonar" for a SonarQube API key — suppress that one rule.
+        # nosemgrep: generic.secrets.security.detected-sonarqube-docs-api-key.detected-sonarqube-docs-api-key
+        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   openapi:
     name: OpenAPI contract (publish + drift-guard)
