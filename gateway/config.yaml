@@ -1,17 +1,29 @@
-# LiteLLM Proxy config — STUB for local dev (compose profile: gateway).
+# LiteLLM Proxy config — local dev profile (compose profile: gateway).
 #
-# TODO(M1.5): the real gateway config — model slots
-# (profiler / vlm / anonymizer / adversary / feedback-adversary / judge / inpaint / tagger),
-# local↔cloud profiles, per-slot fallbacks, budget caps (virtual keys), and the startup
-# separation assertion (editor ≠ judge ≠ adversary).
+# The single model egress: the app calls slots by name with only the proxy's virtual key; the
+# proxy resolves each slot to a model and holds all provider keys. This file mirrors the local
+# profile in app/gateway/slots.py (the separation chain is asserted app-side at startup).
 # Spec: ../Privacy-Exposure-App/docs/04-ai-engine/llm-gateway.md
 #
-# One placeholder slot so the proxy starts when the `gateway` profile is brought up.
+# The cloud profile (frontier/mid models + budget-capped virtual keys) is injected at deploy.
 model_list:
-  - model_name: profiler
-    litellm_params:
-      model: ollama/llama3.2
-      api_base: http://ollama:11434
+  - model_name: profiler            # capable text inference (the only slot used before M3)
+    litellm_params: { model: ollama/qwen2.5, api_base: http://ollama:11434 }
+  - model_name: vlm                 # image geolocation (M4)
+    litellm_params: { model: ollama/qwen2.5-vl, api_base: http://ollama:11434 }
+  - model_name: anonymizer          # defend editor (M3) — must differ from every adversary/judge
+    litellm_params: { model: ollama/phi4, api_base: http://ollama:11434 }
+  - model_name: feedback_adversary  # the editor refines against this (M3)
+    litellm_params: { model: ollama/mistral, api_base: http://ollama:11434 }
+  - model_name: adversary           # held-out evaluator (M3) — must differ from profiler/feedback
+    litellm_params: { model: ollama/llama3.2, api_base: http://ollama:11434 }
+  - model_name: judge               # match + utility judge (M2/M3)
+    litellm_params: { model: ollama/gemma3, api_base: http://ollama:11434 }
+  - model_name: inpaint             # image remediation (M4)
+    litellm_params: { model: ollama/sdxl, api_base: http://ollama:11434 }
+  - model_name: tagger              # optional pre-filter
+    litellm_params: { model: ollama/qwen2.5, api_base: http://ollama:11434 }
 
 litellm_settings:
   drop_params: true
+  turn_off_message_logging: true  # privacy: never log request/response bodies (only metadata)
