@@ -23,13 +23,16 @@ from app.api.v1 import (
     webhooks,
 )
 from app.api.v1.schemas import Problem
-from app.core.config import get_app_settings, get_cors_settings
+from app.core.config import get_app_settings, get_cors_settings, get_gateway_settings
 from app.db.session import dispose_engines, get_session
+from app.gateway.slots import assert_no_provider_keys, assert_slot_separation
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Manage process-lifetime resources — dispose the DB engine pools on shutdown."""
+    """Process-lifetime resources; fail closed on a gateway-separation violation at startup."""
+    assert_no_provider_keys(get_app_settings().environment)
+    assert_slot_separation(get_gateway_settings().gateway_profile)
     yield
     await dispose_engines()
 

@@ -72,6 +72,21 @@ class CorsSettings(BaseSettings):
         return value
 
 
+class GatewaySettings(BaseSettings):
+    """LiteLLM Proxy egress (the single model chokepoint + privacy boundary).
+
+    The app holds ONLY the proxy's virtual key — all provider keys live in the proxy (CLAUDE.md).
+    Slots resolve to concrete models per profile (local|cloud); see `app.gateway.slots`.
+    """
+
+    model_config = _ENV
+
+    litellm_base_url: str = "http://localhost:4000"
+    litellm_virtual_key: str = "sk-local-dev"  # dev placeholder; the budgeted virtual key in prod
+    gateway_profile: str = "local"  # local (Ollama, $0) | cloud (cited runs)
+    gateway_max_retries: int = 2  # bounded repair-retry (llm-gateway.md) — never an infinite loop
+
+
 @lru_cache
 def get_app_settings() -> AppSettings:
     return AppSettings()
@@ -95,3 +110,8 @@ def get_auth_settings() -> AuthSettings:
 @lru_cache
 def get_cors_settings() -> CorsSettings:
     return CorsSettings()
+
+
+@lru_cache
+def get_gateway_settings() -> GatewaySettings:
+    return GatewaySettings()

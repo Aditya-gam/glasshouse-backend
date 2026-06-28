@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.core.config import get_gateway_settings
 from app.domain.output_schema import AttributeCode, RawAttributeGuess, RawCandidate
-from app.gateway.client import GatewayClient, GatewayConfig, default_gateway_config
+from app.gateway.client import GatewayClient
 
 # Minimal tracer prompt; the real attack prompt is built at M1.7 (prompts/attack-text.md).
 _TRACER_PROMPT = (
@@ -21,8 +22,8 @@ _ATTRIBUTES = set(get_args(AttributeCode))
 
 
 async def test_profile_attribute_delegates_to_instructor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The client asks for our response_model at a deterministic temperature — no live model."""
-    client = GatewayClient(GatewayConfig(model="stub"))
+    """The client asks for our response_model at the profiler slot, deterministic — no model."""
+    client = GatewayClient()
     canned = RawAttributeGuess(
         attribute="location",
         status="inferred",
@@ -37,30 +38,27 @@ async def test_profile_attribute_delegates_to_instructor(monkeypatch: pytest.Mon
     mock_create.assert_awaited_once()
     assert mock_create.await_args is not None
     kwargs = mock_create.await_args.kwargs
+    assert kwargs["model"] == "profiler"  # the client calls the profiler slot, not a raw model
     assert kwargs["response_model"] is RawAttributeGuess
     assert kwargs["temperature"] == 0
     assert kwargs["max_retries"] == 2
 
 
-def _ollama_has_model(model: str) -> bool:
-    """True if a local Ollama is serving `model` (so the live test can run; else it skips)."""
+def _proxy_reachable() -> bool:
+    """True if the LiteLLM proxy is up (so the live test can run; else it skips)."""
     try:
-        resp = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
-        names = [m["name"] for m in resp.json().get("models", [])]
+        url = get_gateway_settings().litellm_base_url
+        return httpx.get(f"{url}/health/liveliness", timeout=2.0).status_code == 200
     except Exception:
         return False
-    return any(name == model or name.startswith(f"{model}:") for name in names)
-
-
-_CONFIG = default_gateway_config()
 
 
 @pytest.mark.skipif(
-    not _ollama_has_model(_CONFIG.model),
-    reason="requires a running Ollama serving the configured model",
+    not _proxy_reachable(),
+    reason="requires the LiteLLM proxy (docker compose --profile gateway up)",
 )
 async def test_live_profile_attribute_returns_validated_guess() -> None:
-    client = GatewayClient(_CONFIG)
+    client = GatewayClient()
     guess = await client.profile_attribute(system_prompt=_TRACER_PROMPT, content=_SAMPLE_TEXT)
     # Stochastic output: assert the contract, not exact values (instructor already validated shape).
     assert guess.attribute in _ATTRIBUTES

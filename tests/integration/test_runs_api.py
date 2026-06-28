@@ -15,9 +15,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.deps import get_app_engine, get_gateway_client, get_master_key
+from app.core.config import get_gateway_settings
 from app.db.rls import set_rls_context
 from app.domain.output_schema import RawAttributeGuess, RawCandidate
-from app.gateway.client import default_gateway_config
 from app.main import app
 from app.repositories.inferences import get_run_inferences
 from app.repositories.items import insert_item
@@ -187,18 +187,17 @@ async def test_missing_user_header_is_unauthorized(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-def _ollama_has_model(model: str) -> bool:
+def _proxy_reachable() -> bool:
     try:
-        resp = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
-        names = [m["name"] for m in resp.json().get("models", [])]
+        url = get_gateway_settings().litellm_base_url
+        return httpx.get(f"{url}/health/liveliness", timeout=2.0).status_code == 200
     except Exception:
         return False
-    return any(name == model or name.startswith(f"{model}:") for name in names)
 
 
 @pytest.mark.skipif(
-    not _ollama_has_model(default_gateway_config().model),
-    reason="requires a running Ollama serving the configured model",
+    not _proxy_reachable(),
+    reason="requires the LiteLLM proxy (docker compose --profile gateway up)",
 )
 async def test_live_end_to_end(
     app_engine: AsyncEngine, owner_engine: AsyncEngine, seed_user: SeedUser, master_key: str
