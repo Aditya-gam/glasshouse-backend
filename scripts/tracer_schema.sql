@@ -61,7 +61,10 @@ CREATE TABLE IF NOT EXISTS runs (
     engine_version  text,
     idempotency_key text,
     created_at      timestamptz NOT NULL DEFAULT now(),
-    finished_at     timestamptz
+    finished_at     timestamptz,
+    -- Idempotency is per-tenant: two users may pick the same client-generated key. NULL keys
+    -- (runs without one) don't collide. (v2 model's global unique → revisit to this at M1.9.)
+    UNIQUE (owner_user_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_owner_user_id ON runs (owner_user_id);
 

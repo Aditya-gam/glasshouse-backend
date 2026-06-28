@@ -11,6 +11,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.deps import get_app_engine, get_gateway_client, get_master_key
@@ -90,6 +91,34 @@ async def test_post_run_infers_and_get_returns_status(
     assert rows[0].attribute == "location"
     assert rows[0].top_value == "Seattle, WA"
     assert rows[0].reasoning == "mentions a Seattle-specific park"
+
+
+async def test_idempotency_key_dedupes_run(
+    client: AsyncClient,
+    app_engine: AsyncEngine,
+    owner_engine: AsyncEngine,
+    seed_user: SeedUser,
+    master_key: str,
+) -> None:
+    user_a = await seed_user()
+    await _seed_item(app_engine, user_a, "Gas Works Park on a PST morning.", master_key)
+    headers = {"X-Dev-User-Id": str(user_a), "Idempotency-Key": "retry-abc-123"}
+    payload = {"type": "attack", "params": {"attribute": "location"}}
+
+    first = await client.post("/v1/runs", json=payload, headers=headers)
+    second = await client.post("/v1/runs", json=payload, headers=headers)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    # The repeated key returns the original run, and no second run was created.
+    assert second.json()["run_id"] == first.json()["run_id"]
+    async with owner_engine.connect() as conn:
+        count = (
+            await conn.execute(
+                text("SELECT count(*) FROM runs WHERE owner_user_id = :u"), {"u": user_a}
+            )
+        ).scalar_one()
+    assert count == 1
 
 
 async def test_run_invisible_to_other_user(client: AsyncClient, seed_user: SeedUser) -> None:

@@ -48,11 +48,13 @@ class Severity(ApiModel):
 
 # ------------------------------------------------------------------- runs --
 class RunCreate(ApiModel):
-    """POST /v1/runs body. `params` is type-specific; idempotency_key dedupes retries."""
+    """POST /v1/runs body. `params` is type-specific.
+
+    Retries are deduped via the `Idempotency-Key` request header (api-design rule), not a field.
+    """
 
     type: Literal["attack", "eval", "remediation"]
     params: dict[str, object] = {}
-    idempotency_key: str | None = None
 
 
 class RunAccepted(ApiModel):

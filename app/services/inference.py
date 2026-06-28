@@ -32,6 +32,7 @@ async def run_attack(
     owner_user_id: UUID,
     attribute: AttributeCode,
     master_key: str,
+    idempotency_key: str | None = None,
 ) -> UUID:
     """Run one synchronous attack pass, persist the run + inference, and return the run id."""
     run_id = await runs_repo.create_run(
@@ -40,6 +41,7 @@ async def run_attack(
         run_type="attack",
         status="running",
         engine_version=_ENGINE_VERSION,
+        idempotency_key=idempotency_key,
     )
 
     texts = await items_repo.get_items_text(conn, master_key)
