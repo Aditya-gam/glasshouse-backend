@@ -25,7 +25,9 @@ from app.domain.output_schema import (
     Span,
 )
 
-_NUMBER = re.compile(r"\$?\s*([0-9][0-9,]*\.?[0-9]*)\s*([kKmM])?")
+# Unambiguous (no ReDoS): integer part, then an optional decimal that must start with '.', so the
+# two digit-runs can't overlap and backtrack (the original `[0-9,]*\.?[0-9]*` could).
+_NUMBER = re.compile(r"\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM])?")
 
 
 def _parse_number(text: str) -> float | None:
