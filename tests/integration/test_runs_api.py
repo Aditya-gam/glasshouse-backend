@@ -18,6 +18,7 @@ from app.db.rls import set_rls_context
 from app.domain.output_schema import RawAttributeGuess, RawCandidate
 from app.gateway.client import default_gateway_config
 from app.main import app
+from app.repositories.inferences import get_run_inferences
 from app.repositories.items import insert_item
 
 SeedUser = Callable[[], Awaitable[UUID]]
@@ -56,8 +57,12 @@ async def client(app_engine: AsyncEngine, master_key: str) -> AsyncIterator[Asyn
     app.dependency_overrides.clear()
 
 
-async def test_post_run_infers_and_get_returns_it(
-    client: AsyncClient, app_engine: AsyncEngine, seed_user: SeedUser, master_key: str
+async def test_post_run_infers_and_get_returns_status(
+    client: AsyncClient,
+    app_engine: AsyncEngine,
+    owner_engine: AsyncEngine,
+    seed_user: SeedUser,
+    master_key: str,
 ) -> None:
     user_a = await seed_user()
     await _seed_item(
@@ -66,7 +71,7 @@ async def test_post_run_infers_and_get_returns_it(
     headers = {"X-Dev-User-Id": str(user_a)}
 
     created = await client.post(
-        "/v1/runs", json={"type": "attack", "attribute": "location"}, headers=headers
+        "/v1/runs", json={"type": "attack", "params": {"attribute": "location"}}, headers=headers
     )
     assert created.status_code == 202
     run_id = created.json()["run_id"]
@@ -75,10 +80,16 @@ async def test_post_run_infers_and_get_returns_it(
     assert fetched.status_code == 200
     body = fetched.json()
     assert body["status"] == "succeeded"
-    inference = body["inferences"][0]
-    assert inference["attribute"] == "location"
-    assert inference["top_value"] == "Seattle, WA"
-    assert inference["reasoning"] == "mentions a Seattle-specific park"
+    assert body["type"] == "attack"
+
+    # The inference persisted (read past RLS as the owner; inferences are served by /v1/inferences,
+    # which lands at M1.7).
+    async with owner_engine.connect() as conn:
+        rows = await get_run_inferences(conn, UUID(run_id), master_key)
+    assert len(rows) == 1
+    assert rows[0].attribute == "location"
+    assert rows[0].top_value == "Seattle, WA"
+    assert rows[0].reasoning == "mentions a Seattle-specific park"
 
 
 async def test_run_invisible_to_other_user(client: AsyncClient, seed_user: SeedUser) -> None:
@@ -86,7 +97,7 @@ async def test_run_invisible_to_other_user(client: AsyncClient, seed_user: SeedU
     user_b = await seed_user()
     created = await client.post(
         "/v1/runs",
-        json={"type": "attack", "attribute": "location"},
+        json={"type": "attack", "params": {"attribute": "location"}},
         headers={"X-Dev-User-Id": str(user_a)},
     )
     run_id = created.json()["run_id"]
@@ -96,7 +107,9 @@ async def test_run_invisible_to_other_user(client: AsyncClient, seed_user: SeedU
 
 
 async def test_missing_user_header_is_unauthorized(client: AsyncClient) -> None:
-    resp = await client.post("/v1/runs", json={"type": "attack", "attribute": "location"})
+    resp = await client.post(
+        "/v1/runs", json={"type": "attack", "params": {"attribute": "location"}}
+    )
     assert resp.status_code == 401
 
 
@@ -114,7 +127,7 @@ def _ollama_has_model(model: str) -> bool:
     reason="requires a running Ollama serving the configured model",
 )
 async def test_live_end_to_end(
-    app_engine: AsyncEngine, seed_user: SeedUser, master_key: str
+    app_engine: AsyncEngine, owner_engine: AsyncEngine, seed_user: SeedUser, master_key: str
 ) -> None:
     user_a = await seed_user()
     await _seed_item(
@@ -126,14 +139,18 @@ async def test_live_end_to_end(
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as live:
             headers = {"X-Dev-User-Id": str(user_a)}
             created = await live.post(
-                "/v1/runs", json={"type": "attack", "attribute": "location"}, headers=headers
+                "/v1/runs",
+                json={"type": "attack", "params": {"attribute": "location"}},
+                headers=headers,
             )
             assert created.status_code == 202
-            fetched = await live.get(f"/v1/runs/{created.json()['run_id']}", headers=headers)
+            run_id = created.json()["run_id"]
+            fetched = await live.get(f"/v1/runs/{run_id}", headers=headers)
     finally:
         app.dependency_overrides.clear()
 
-    body = fetched.json()
-    assert body["status"] == "succeeded"
-    assert len(body["inferences"]) == 1
-    assert body["inferences"][0]["status"] in {"inferred", "abstained"}
+    assert fetched.json()["status"] == "succeeded"
+    async with owner_engine.connect() as conn:
+        rows = await get_run_inferences(conn, UUID(run_id), master_key)
+    assert len(rows) == 1
+    assert rows[0].status in {"inferred", "abstained"}
