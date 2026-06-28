@@ -17,6 +17,7 @@ dependencies = [
     "openai>=1.50",
     "scalar-fastapi>=1.0",
     "pgvector>=0.3",
+    "pyjwt[crypto]>=2.13.0",
 ]
 
 [dependency-groups]
