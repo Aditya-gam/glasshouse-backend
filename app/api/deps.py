@@ -13,13 +13,12 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from app.core.config import get_app_settings, get_crypto_settings, get_database_settings
+from app.core.config import get_app_settings, get_crypto_settings
 from app.db.rls import set_rls_context
+from app.db.session import app_engine
 from app.gateway.client import GatewayClient
-
-_app_engine: AsyncEngine = create_async_engine(get_database_settings().app_database_url)
 
 # The dev header is a stand-in until Clerk (M0.6). Honour it ONLY in non-prod environments so
 # it can never become a production auth bypass — fail closed everywhere else.
@@ -39,7 +38,7 @@ def get_current_user(x_dev_user_id: Annotated[UUID | None, Header()] = None) -> 
 
 def get_app_engine() -> AsyncEngine:
     """The RLS-enforced app-role engine (overridden in tests with the test container engine)."""
-    return _app_engine
+    return app_engine
 
 
 def get_master_key() -> str:
