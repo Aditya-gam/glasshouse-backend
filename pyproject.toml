@@ -44,10 +44,11 @@ strict = true
 
 [[tool.mypy.overrides]]
 # These ship no type information; don't fail strict mode on third-party stubs.
-module = ["testcontainers.*"]
+module = ["testcontainers.*", "asyncpg.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+pythonpath = ["."]   # run from source — the app isn't pip-installed as a package
