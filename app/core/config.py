@@ -6,9 +6,10 @@ Gateway settings move under pydantic-settings with the M1.5 gateway rebuild.
 """
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _ENV = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -59,13 +60,14 @@ class CorsSettings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", env_prefix="CORS_", extra="ignore"
     )
 
-    allow_origins: list[str] = ["http://localhost:3000"]
+    # NoDecode: take the raw env string, don't let pydantic-settings JSON-decode it first — the
+    # validator below splits a comma-separated list (CORS_ALLOW_ORIGINS=http://a,https://b).
+    allow_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
 
     @field_validator("allow_origins", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
-        """Accept a comma-separated env string (``CORS_ALLOW_ORIGINS``) as well as a JSON list."""
-        if isinstance(value, str) and not value.startswith("["):
+        if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
