@@ -12,6 +12,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.services.consent import ConsentRequiredError
+
 _PROBLEM_BASE = "https://glasshouse.app/problems"
 _MEDIA_TYPE = "application/problem+json"
 
@@ -26,12 +28,6 @@ class DomainError(Exception):
     def __init__(self, detail: str | None = None) -> None:
         self.detail = detail
         super().__init__(detail or self.title)
-
-
-class ConsentMissing(DomainError):
-    status_code = status.HTTP_403_FORBIDDEN
-    problem_type = f"{_PROBLEM_BASE}/consent-missing"
-    title = "Consent required"
 
 
 class NotFound(DomainError):
@@ -92,8 +88,20 @@ async def _validation_handler(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def _consent_handler(request: Request, exc: Exception) -> JSONResponse:
+    """The consent gate (services/consent.py) denied the run → 403 (fail closed)."""
+    return _problem(
+        status_code=status.HTTP_403_FORBIDDEN,
+        title="Consent required",
+        problem_type=f"{_PROBLEM_BASE}/consent-missing",
+        detail=str(exc),  # the purpose only — never PII
+        instance=request.url.path,
+    )
+
+
 def register_error_handlers(app: FastAPI) -> None:
     """Wire the problem+json handlers onto the app."""
     app.add_exception_handler(DomainError, _domain_handler)
+    app.add_exception_handler(ConsentRequiredError, _consent_handler)
     app.add_exception_handler(StarletteHTTPException, _http_handler)
     app.add_exception_handler(RequestValidationError, _validation_handler)
