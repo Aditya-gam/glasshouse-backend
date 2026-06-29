@@ -26,6 +26,7 @@ from app.retrieval.embedder import Embedder
 from app.retrieval.pii import PiiDetector
 from app.retrieval.retriever import retrieve_evidence
 from app.services.geocoding import Geocoder, enrich_geo
+from app.services.occupation import OccupationJudge, StringMatchJudge, aggregate_occupation
 
 # The (model + prompt) pin for the tracer path; the real engine_version is ENGINE_VERSION (M1.7).
 _TRACER_ENGINE_VERSION = "tracer-profiler@qwen2.5"
@@ -153,11 +154,13 @@ async def run_text_attack(
     master_key: str,
     n_runs: int | None = None,
     temperature: float | None = None,
+    judge: OccupationJudge | None = None,
 ) -> UUID:
     """Self-consistency text attack (M1.8): retrieve → N runs (temp>0) → normalize → geocode →
     cluster by meaning → persist the consensus (raw = agreement fraction). N=1 is the dev/fast
     single self_reported pass at temp 0. RLS-scoped; content decrypted in memory, never logged.
     """
+    occupation_judge = judge or StringMatchJudge()
     settings = get_attack_settings()
     runs = n_runs if n_runs is not None else settings.n_runs
     # N=1 dev/fast is deterministic (temp 0); the ensemble samples at temp>0 so runs can differ.
@@ -184,7 +187,12 @@ async def run_text_attack(
             by_attribute[raw.attribute].append(await enrich_geo(normalize_guess(raw), geocoder))
 
     for attribute, guesses in by_attribute.items():
-        consensus = aggregate(attribute, guesses, n_runs=runs) if runs >= 2 else guesses[0]
+        if runs < 2:
+            consensus = guesses[0]  # dev/fast: the single self_reported pass, no clustering
+        elif attribute == "occupation":
+            consensus = await aggregate_occupation(guesses, occupation_judge, n_runs=runs)
+        else:
+            consensus = aggregate(attribute, guesses, n_runs=runs)
         await persist_attribute_guess(
             conn,
             consensus,

@@ -67,6 +67,23 @@ async def test_profile_all_returns_joint_guesses(monkeypatch: pytest.MonkeyPatch
     assert kwargs["temperature"] == 0
 
 
+async def test_judge_same_uses_the_judge_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The occupation judge calls the separate `judge` slot with the boolean schema, temp 0."""
+    from app.gateway.client import _Equivalence
+
+    client = GatewayClient()
+    mock_create = AsyncMock(return_value=_Equivalence(equivalent=True))
+    monkeypatch.setattr(client._client.chat.completions, "create", mock_create)
+
+    result = await client.judge_same("SWE", "software engineer")
+
+    assert result is True
+    assert mock_create.await_args is not None
+    kwargs = mock_create.await_args.kwargs
+    assert kwargs["model"] == "judge"  # the judge slot, distinct from profiler (separation chain)
+    assert kwargs["response_model"] is _Equivalence and kwargs["temperature"] == 0
+
+
 def _proxy_reachable() -> bool:
     """True if the LiteLLM proxy is up (so the live test can run; else it skips)."""
     try:

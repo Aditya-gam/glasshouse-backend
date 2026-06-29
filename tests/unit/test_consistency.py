@@ -113,14 +113,86 @@ def test_income_clusters_by_bracket() -> None:
     assert isinstance(value, NumericValue) and value.bracket == "high"
 
 
-def test_geo_clusters_by_geonames_id() -> None:
-    guesses = [
-        _run("location", _geo(5809844)),
-        _run("location", _geo(5809844)),
-        _run("location", _geo(5746545)),
+# --- hierarchical geo (M1.8b §3, §5) ---------------------------------------------------------
+def _geo_full(
+    country: str | None = None,
+    region: str | None = None,
+    city: str | None = None,
+    neighborhood: str | None = None,
+    *,
+    precision: str,
+    geonames_id: int | None = None,
+) -> GeoHierValue:
+    return GeoHierValue(
+        country=country,
+        region=region,
+        city=city,
+        neighborhood=neighborhood,
+        precision_level=precision,  # type: ignore[arg-type]
+        geonames_id=geonames_id,
+    )
+
+
+def test_geo_reports_finest_level_clearing_threshold() -> None:
+    runs = [
+        _run(
+            "location",
+            _geo_full(
+                "US", "Washington", "Seattle", "Fremont", precision="neighborhood", geonames_id=5
+            ),
+        ),
+        _run(
+            "location", _geo_full("US", "Washington", "Seattle", precision="city", geonames_id=10)
+        ),
+        _run("location", _geo_full("US", "Oregon", "Portland", precision="city", geonames_id=20)),
     ]
-    result = aggregate("location", guesses, n_runs=3)
+    result = aggregate("location", runs, n_runs=3)
+    top = result.candidates[0].value
+    assert isinstance(top, GeoHierValue)
+    assert (top.city, top.precision_level, top.neighborhood) == ("Seattle", "city", None)
+    assert top.geonames_id == 10  # the city-precision member's id, not Fremont's
     assert result.candidates[0].confidence.raw == 2 / 3
+    assert result.candidates[1].confidence.raw == 1 / 3  # Portland runner-up
+
+
+def test_geo_neighborhood_clears_when_all_agree() -> None:
+    value = _geo_full(
+        "US", "Washington", "Seattle", "Fremont", precision="neighborhood", geonames_id=5
+    )
+    top = aggregate("location", [_run("location", value)] * 3, n_runs=3).candidates[0].value
+    assert isinstance(top, GeoHierValue)
+    assert top.precision_level == "neighborhood" and top.neighborhood == "Fremont"
+    assert top.geonames_id == 5
+
+
+def test_geo_falls_back_to_region_when_cities_differ() -> None:
+    runs = [
+        _run(
+            "location", _geo_full("US", "Washington", "Seattle", precision="city", geonames_id=10)
+        ),
+        _run("location", _geo_full("US", "Washington", "Tacoma", precision="city", geonames_id=11)),
+        _run("location", _geo_full("US", "Oregon", "Portland", precision="city", geonames_id=20)),
+    ]
+    top = aggregate("location", runs, n_runs=3).candidates[0].value
+    assert isinstance(top, GeoHierValue)
+    assert (top.region, top.city, top.precision_level) == ("Washington", None, "region")
+    assert top.geonames_id is None  # no member resolved at region precision
+
+
+def test_geo_abstains_when_even_country_disagrees() -> None:
+    runs = [
+        _run("location", _geo_full("US", precision="country", geonames_id=1)),
+        _run("location", _geo_full("FR", precision="country", geonames_id=2)),
+        _run("location", _geo_full("JP", precision="country", geonames_id=3)),
+    ]
+    assert aggregate("location", runs, n_runs=3).status == "abstained"
+
+
+def test_birthplace_caps_at_city() -> None:
+    value = _geo_full("PT", "Porto", "Porto", "Ribeira", precision="neighborhood", geonames_id=7)
+    top = aggregate("birthplace", [_run("birthplace", value)] * 3, n_runs=3).candidates[0].value
+    assert isinstance(top, GeoHierValue)
+    assert top.precision_level == "city" and top.neighborhood is None
 
 
 # --- property tests (invariants of the signal) -----------------------------------------------
