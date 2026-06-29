@@ -22,6 +22,7 @@ from app.repositories import runs as runs_repo
 from app.retrieval.embedder import Embedder
 from app.retrieval.pii import PiiDetector
 from app.retrieval.retriever import retrieve_evidence
+from app.services.geocoding import Geocoder, enrich_geo
 
 # The (model + prompt) pin for the tracer path; the real engine_version is ENGINE_VERSION (M1.7).
 _TRACER_ENGINE_VERSION = "tracer-profiler@qwen2.5"
@@ -143,11 +144,12 @@ async def run_text_attack(
     gateway: Profiler,
     embedder: Embedder,
     pii_detector: PiiDetector,
+    geocoder: Geocoder,
     *,
     owner_user_id: UUID,
     master_key: str,
 ) -> UUID:
-    """Joint text attack (M1.7): retrieve → infer all 8 → normalize → persist. RLS-scoped."""
+    """Joint text attack (M1.7): retrieve → infer 8 → normalize → geocode → persist. RLS-scoped."""
     profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
     run_id = await runs_repo.insert_run_v2(
         conn, profile_id, run_type="attack", status="running", engine_version=ENGINE_VERSION
@@ -156,7 +158,7 @@ async def run_text_attack(
     valid_item_ids = {item.id for item in evidence}
     content = build_user_prompt([(str(item.id), item.text) for item in evidence])
     for raw in await gateway.profile_all(content=content):
-        guess = normalize_guess(raw)
+        guess = await enrich_geo(normalize_guess(raw), geocoder)  # GeoNames resolves geo_hier (IO)
         await persist_attribute_guess(
             conn,
             guess,

@@ -29,6 +29,13 @@ def _raw(
     )
 
 
+def _value(attribute: AttributeCode, value_text: str) -> str:
+    """The normalized categorical value for a one-candidate guess (test convenience)."""
+    value = normalize_guess(_raw(attribute, value_text)).candidates[0].value
+    assert isinstance(value, CategoricalValue)
+    return value.value
+
+
 def test_geo_hier_splits_place() -> None:
     value = normalize_guess(_raw("location", "Seattle, Washington, US")).candidates[0].value
     assert isinstance(value, GeoHierValue)
@@ -40,11 +47,57 @@ def test_income_parses_to_estimate_and_bracket() -> None:
     value = normalize_guess(_raw("income", "about $95k")).candidates[0].value
     assert isinstance(value, NumericValue)
     assert value.estimate == 95000 and value.bracket == "high" and value.unit == "USD/yr"
+    assert value.range is not None  # an approx marker ("about") attaches an uncertainty band
+
+
+def test_income_exact_number_has_no_fabricated_band() -> None:
+    value = normalize_guess(_raw("income", "$95k")).candidates[0].value
+    assert isinstance(value, NumericValue) and value.estimate == 95000 and value.range is None
+
+
+def test_income_figures_maps_to_bracket() -> None:
+    high = normalize_guess(_raw("income", "six figures")).candidates[0].value
+    assert isinstance(high, NumericValue) and high.bracket == "high" and high.estimate == 150_000
+    medium = normalize_guess(_raw("income", "five figures")).candidates[0].value
+    assert isinstance(medium, NumericValue) and medium.bracket == "medium"
+
+
+def test_income_explicit_range_takes_midpoint() -> None:
+    value = normalize_guess(_raw("income", "80k-100k")).candidates[0].value
+    assert isinstance(value, NumericValue) and value.estimate == 90_000
+    assert value.range is not None and (value.range.low, value.range.high) == (80_000, 100_000)
 
 
 def test_age_parses_to_whole_years() -> None:
     value = normalize_guess(_raw("age", "I'm 31")).candidates[0].value
     assert isinstance(value, NumericValue) and value.estimate == 31
+
+
+def test_age_late_twenties_band() -> None:
+    value = normalize_guess(_raw("age", "late 20s")).candidates[0].value
+    assert isinstance(value, NumericValue) and value.estimate == 28
+    assert value.range is not None and (value.range.low, value.range.high) == (27, 29)
+
+
+def test_age_word_decade_with_modifier() -> None:
+    value = normalize_guess(_raw("age", "mid thirties")).candidates[0].value
+    assert isinstance(value, NumericValue) and value.estimate == 35
+    assert value.range is not None and (value.range.low, value.range.high) == (34, 36)
+
+
+def test_age_bare_decade_spans_the_decade() -> None:
+    value = normalize_guess(_raw("age", "in my twenties")).candidates[0].value
+    assert isinstance(value, NumericValue) and value.estimate == 25
+    assert value.range is not None and (value.range.low, value.range.high) == (20, 29)
+
+
+def test_categorical_synonym_maps_to_allowed() -> None:
+    assert _value("sex", "she/her") == "female"
+    assert _value("sex", "they/them") == "non-binary"
+    assert _value("relationship", "hitched") == "married"
+    assert _value("relationship", "dating") == "in_relationship"
+    assert _value("education", "PhD") == "doctorate"
+    assert _value("education", "undergrad") == "bachelor"
 
 
 def test_categorical_matches_allowed() -> None:

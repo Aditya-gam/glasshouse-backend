@@ -87,6 +87,20 @@ class GatewaySettings(BaseSettings):
     gateway_max_retries: int = 2  # bounded repair-retry (llm-gateway.md) — never an infinite loop
 
 
+class GeocodingSettings(BaseSettings):
+    """GeoNames resolution for the geo_hier normalizer (output-schema.md §6, Tier-1).
+
+    `geonames_username` is a free geonames.org account (web services enabled). When unset — CI and
+    local dev — the attack uses a no-op geocoder and falls back to the heuristic geo split (no
+    `geonames_id`); privacy fail-closed: a missing username never under-reports location exposure.
+    """
+
+    model_config = _ENV
+
+    geonames_username: str | None = None
+    geonames_timeout: float = 5.0  # seconds; a slow free API must not stall the run
+
+
 @lru_cache
 def get_app_settings() -> AppSettings:
     return AppSettings()
@@ -115,3 +129,8 @@ def get_cors_settings() -> CorsSettings:
 @lru_cache
 def get_gateway_settings() -> GatewaySettings:
     return GatewaySettings()
+
+
+@lru_cache
+def get_geocoding_settings() -> GeocodingSettings:
+    return GeocodingSettings()
