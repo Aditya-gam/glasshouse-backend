@@ -6,31 +6,30 @@ POST creates and (for the tracer) runs the attack synchronously, returning the p
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Annotated, get_args
+from typing import Annotated
 from uuid import UUID
 
+from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.api.deps import (
     get_app_engine,
+    get_arq_pool,
     get_current_user,
-    get_gateway_client,
-    get_master_key,
     get_scoped_session,
 )
 from app.api.errors import NotFound, NotImplementedYet
 from app.api.v1.schemas import RunAccepted, RunCreate, RunStatus
 from app.db.rls import set_rls_context
-from app.domain.output_schema import AttributeCode
-from app.gateway.client import GatewayClient
+from app.gateway.prompts import ENGINE_VERSION
+from app.repositories import profiles as profiles_repo
 from app.repositories import runs as runs_repo
-from app.services.inference import run_attack
+from app.services.consent import require_consent
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 
-_DEFAULT_ATTRIBUTE = "location"
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled"})
 _SSE_POLL_SECONDS = 1.0
 _SSE_MAX_SECONDS = 30.0
@@ -40,34 +39,35 @@ _SSE_MAX_SECONDS = 30.0
 async def create_run(
     body: RunCreate,
     conn: Annotated[AsyncConnection, Depends(get_scoped_session)],
-    gateway: Annotated[GatewayClient, Depends(get_gateway_client)],
     user_id: Annotated[UUID, Depends(get_current_user)],
-    master_key: Annotated[str, Depends(get_master_key)],
+    pool: Annotated[ArqRedis, Depends(get_arq_pool)],
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> RunAccepted:
-    """Create a run, execute it synchronously (M1.9 → queue), and return 202 + run_id.
+    """Create an attack run and enqueue it; return 202 + run_id (poll `GET /runs/{id}` or the SSE).
 
-    A repeated `Idempotency-Key` returns the original run without re-running it (api-design rule).
-    Only `attack` is live for the tracer; `eval`/`remediation` arrive with M2/M3.
+    **Consent-gated** (fail closed). The run infers all 8 attributes jointly (M1.7+); `params` is
+    reserved. A repeated `Idempotency-Key` returns the original run without re-enqueuing.
+    `eval`/`remediation` arrive with M2/M3.
     """
     if body.type != "attack":
         raise NotImplementedYet(f"run type '{body.type}' lands with its engine milestone")
-    attribute = str(body.params.get("attribute", _DEFAULT_ATTRIBUTE))
-    if attribute not in get_args(AttributeCode):
-        raise NotFound(f"unknown attribute '{attribute}'")
+    await require_consent(conn, "self_audit")  # no run without a valid, non-revoked consent
     if idempotency_key is not None:
         existing = await runs_repo.get_run_by_idempotency_key(conn, idempotency_key)
         if existing is not None:
             return RunAccepted(run_id=existing.id, status=existing.status)
-    run_id = await run_attack(
+    profile_id = await profiles_repo.get_or_create_self_profile(conn, user_id)
+    run_id = await runs_repo.insert_run_v2(
         conn,
-        gateway,
-        owner_user_id=user_id,
-        attribute=attribute,  # type: ignore[arg-type]  # validated against AttributeCode above
-        master_key=master_key,
+        profile_id,
+        run_type="attack",
+        status="queued",
+        engine_version=ENGINE_VERSION,
         idempotency_key=idempotency_key,
     )
-    return RunAccepted(run_id=run_id, status="succeeded")
+    # _job_id = the run id → arq dedupes a double-enqueue; the worker runs after this commits.
+    await pool.enqueue_job("attack_run", str(run_id), str(user_id), _job_id=f"attack:{run_id}")
+    return RunAccepted(run_id=run_id, status="queued")
 
 
 @router.get("/{run_id}")

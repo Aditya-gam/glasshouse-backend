@@ -6,6 +6,7 @@ inferences. The legacy single-attribute `run_attack` (tracer, T4) stays until M1
 endpoint + retires the tracer schema. Content is decrypted in memory only and never logged.
 """
 
+import time
 from collections import defaultdict
 from uuid import UUID
 
@@ -21,6 +22,7 @@ from app.gateway.prompts import ENGINE_VERSION, build_user_prompt
 from app.repositories import inferences as inferences_repo
 from app.repositories import items as items_repo
 from app.repositories import profiles as profiles_repo
+from app.repositories import run_metrics as run_metrics_repo
 from app.repositories import runs as runs_repo
 from app.retrieval.embedder import Embedder
 from app.retrieval.pii import PiiDetector
@@ -143,8 +145,9 @@ async def persist_attribute_guess(
             )
 
 
-async def run_text_attack(
+async def execute_attack_run(
     conn: AsyncConnection,
+    run_id: UUID,
     gateway: Profiler,
     embedder: Embedder,
     pii_detector: PiiDetector,
@@ -152,13 +155,16 @@ async def run_text_attack(
     *,
     owner_user_id: UUID,
     master_key: str,
+    allow_special_category: bool,
     n_runs: int | None = None,
     temperature: float | None = None,
     judge: OccupationJudge | None = None,
-) -> UUID:
-    """Self-consistency text attack (M1.8): retrieve → N runs (temp>0) → normalize → geocode →
-    cluster by meaning → persist the consensus (raw = agreement fraction). N=1 is the dev/fast
-    single self_reported pass at temp 0. RLS-scoped; content decrypted in memory, never logged.
+) -> None:
+    """Execute a pre-created run (M1.9 worker core): running → retrieve → N runs (temp>0) →
+    normalize → geocode → cluster by meaning → persist the consensus + run_metrics → succeeded.
+
+    Art. 9 attributes (birthplace) are inferred only with explicit special-category consent
+    (services-consent.md). RLS-scoped; content decrypted in memory, never logged.
     """
     occupation_judge = judge or StringMatchJudge()
     settings = get_attack_settings()
@@ -169,10 +175,9 @@ async def run_text_attack(
         if runs < 2
         else (temperature if temperature is not None else settings.sampling_temperature)
     )
+    await runs_repo.set_run_status(conn, run_id, "running")
+    started = time.monotonic()
     profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
-    run_id = await runs_repo.insert_run_v2(
-        conn, profile_id, run_type="attack", status="running", engine_version=ENGINE_VERSION
-    )
     evidence = await retrieve_evidence(conn, embedder, pii_detector, master_key=master_key)
     valid_item_ids = {item.id for item in evidence}
     content = build_user_prompt([(str(item.id), item.text) for item in evidence])
@@ -187,6 +192,8 @@ async def run_text_attack(
             by_attribute[raw.attribute].append(await enrich_geo(normalize_guess(raw), geocoder))
 
     for attribute, guesses in by_attribute.items():
+        if BY_CODE[attribute].is_art9 and not allow_special_category:
+            continue  # Art. 9 (birthplace) needs explicit special-category consent — skip
         if runs < 2:
             consensus = guesses[0]  # dev/fast: the single self_reported pass, no clustering
         elif attribute == "occupation":
@@ -202,5 +209,45 @@ async def run_text_attack(
             run_id=run_id,
             master_key=master_key,
         )
+    latency_ms = int((time.monotonic() - started) * 1000)
+    await run_metrics_repo.insert_run_metrics(
+        conn, run_id=run_id, latency_ms=latency_ms, model_calls=runs
+    )
     await runs_repo.set_run_status(conn, run_id, "succeeded", finished=True)
+
+
+async def run_text_attack(
+    conn: AsyncConnection,
+    gateway: Profiler,
+    embedder: Embedder,
+    pii_detector: PiiDetector,
+    geocoder: Geocoder,
+    *,
+    owner_user_id: UUID,
+    master_key: str,
+    n_runs: int | None = None,
+    temperature: float | None = None,
+    judge: OccupationJudge | None = None,
+) -> UUID:
+    """Create a run and execute it inline — the direct entry (tests); the worker uses the two
+    steps separately (`create_run` enqueues, then `execute_attack_run` runs). RLS-scoped.
+    """
+    profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
+    run_id = await runs_repo.insert_run_v2(
+        conn, profile_id, run_type="attack", status="queued", engine_version=ENGINE_VERSION
+    )
+    await execute_attack_run(
+        conn,
+        run_id,
+        gateway,
+        embedder,
+        pii_detector,
+        geocoder,
+        owner_user_id=owner_user_id,
+        master_key=master_key,
+        allow_special_category=True,
+        n_runs=n_runs,
+        temperature=temperature,
+        judge=judge,
+    )
     return run_id

@@ -29,11 +29,16 @@ from app.gateway.slots import assert_no_provider_keys, assert_slot_separation
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Process-lifetime resources; fail closed on a gateway-separation violation at startup."""
     assert_no_provider_keys(get_app_settings().environment)
     assert_slot_separation(get_gateway_settings().gateway_profile)
+    # The arq enqueue pool is created lazily on first use (deps.get_arq_pool) so startup never
+    # blocks on Redis — the app (and the contract test's in-process ASGI) boots without it.
+    app.state.arq_pool = None
     yield
+    if app.state.arq_pool is not None:
+        await app.state.arq_pool.aclose()
     await dispose_engines()
 
 

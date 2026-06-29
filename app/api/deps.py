@@ -12,7 +12,8 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, status
+from arq.connections import ArqRedis
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -85,6 +86,26 @@ def get_master_key() -> str:
 def get_gateway_client() -> GatewayClient:
     """The model egress (Ollama for the tracer; M1.5 → LiteLLM Proxy)."""
     return GatewayClient()
+
+
+async def get_arq_pool(request: Request) -> ArqRedis:
+    """The arq enqueue pool — created lazily on first use + cached; 503 if Redis is unreachable.
+
+    Lazy (not at startup) so the app boots without Redis and the contract test's in-process ASGI
+    never connects to it (tests override this dependency with a fake).
+    """
+    pool = getattr(request.app.state, "arq_pool", None)
+    if pool is None:
+        from app.workers.queue import create_arq_pool
+
+        try:
+            pool = await create_arq_pool()
+        except Exception as exc:  # Redis down → surface a clean 503, never a 500
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="queue unavailable"
+            ) from exc
+        request.app.state.arq_pool = pool
+    return pool
 
 
 async def get_scoped_session(

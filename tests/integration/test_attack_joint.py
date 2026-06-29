@@ -22,10 +22,13 @@ from app.core.config import get_database_settings
 from app.db.crypto import provision_user_dek
 from app.db.rls import set_rls_context
 from app.domain.output_schema import RawAttributeGuess, RawCandidate, RawEvidence
+from app.gateway.prompts import ENGINE_VERSION
 from app.ingestion.base import Method, ParsedTextRecord, Platform
+from app.repositories.profiles import get_or_create_self_profile
+from app.repositories.runs import insert_run_v2
 from app.retrieval.embedder import EMBEDDING_DIM
 from app.services.geocoding import GeoResolution
-from app.services.inference import run_text_attack
+from app.services.inference import execute_attack_run, run_text_attack
 from app.services.ingestion import ingest_and_persist
 
 _MASTER_KEY = "test-master-key-not-a-real-secret"
@@ -255,7 +258,20 @@ async def test_joint_attack_persists_canonical_inferences(
                 {"r": run_id, "u": user_id, "mk": _MASTER_KEY},
             )
         ).scalar_one()
+        run_status, metrics = (
+            (
+                await conn.execute(text("SELECT status FROM runs WHERE id = :r"), {"r": run_id})
+            ).scalar_one(),
+            (
+                await conn.execute(
+                    text("SELECT model_calls FROM run_metrics WHERE run_id = :r"), {"r": run_id}
+                )
+            ).scalar_one(),
+        )
 
+    assert (
+        run_status == "succeeded" and metrics == 3
+    )  # terminal + run_metrics (N=3 calls) persisted
     assert statuses == {"location": "inferred", "birthplace": "inferred", "sex": "abstained"}
     # non-Art. 9 → JSONB plaintext value; Art. 9 (birthplace) → encrypted value_ct, value NULL.
     loc_value, loc_value_ct = loc
@@ -334,3 +350,37 @@ async def test_self_consistency_persists_agreement_fraction(
     assert [row.rank for row in candidates] == [1, 2]  # majority + runner-up
     assert all(row.confidence_source == "self_consistency" for row in candidates)
     assert candidates[0].raw_confidence == 2 / 3 and candidates[1].raw_confidence == 1 / 3
+
+
+async def test_birthplace_skipped_without_special_category_consent(
+    owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    """Art. 9 (birthplace) is inferred only with explicit special-category consent (M1.9)."""
+    user_id, item_id = await _seed_user_and_item(owner_engine, app_engine)
+
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user_id)
+        profile_id = await get_or_create_self_profile(conn, user_id)
+        run_id = await insert_run_v2(
+            conn, profile_id, run_type="attack", status="queued", engine_version=ENGINE_VERSION
+        )
+        await execute_attack_run(
+            conn,
+            run_id,
+            _FakeProfiler(str(item_id)),
+            _FakeEmbedder(),
+            _FakeDetector(),
+            _FakeGeocoder(),
+            owner_user_id=user_id,
+            master_key=_MASTER_KEY,
+            allow_special_category=False,
+        )
+
+    async with owner_engine.connect() as conn:
+        attributes = {
+            row[0]
+            for row in await conn.execute(
+                text("SELECT attribute_code FROM inferences WHERE run_id = :r"), {"r": run_id}
+            )
+        }
+    assert "location" in attributes and "birthplace" not in attributes  # Art. 9 skipped

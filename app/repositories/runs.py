@@ -46,15 +46,27 @@ async def create_run(
 
 
 async def insert_run_v2(
-    conn: AsyncConnection, profile_id: UUID, *, run_type: str, status: str, engine_version: str
+    conn: AsyncConnection,
+    profile_id: UUID,
+    *,
+    run_type: str,
+    status: str,
+    engine_version: str,
+    idempotency_key: str | None = None,
 ) -> UUID:
-    """Insert a run against the v2 schema (profile-scoped); the M1.7 attack path. RLS-scoped."""
+    """Insert a run against the v2 schema (profile-scoped); the M1.7+ attack path. RLS-scoped."""
     result = await conn.execute(
         text(
-            "INSERT INTO runs (profile_id, type, status, engine_version) "
-            "VALUES (:profile_id, :type, :status, :ev) RETURNING id"
+            "INSERT INTO runs (profile_id, type, status, engine_version, idempotency_key) "
+            "VALUES (:profile_id, :type, :status, :ev, :idem) RETURNING id"
         ),
-        {"profile_id": profile_id, "type": run_type, "status": status, "ev": engine_version},
+        {
+            "profile_id": profile_id,
+            "type": run_type,
+            "status": status,
+            "ev": engine_version,
+            "idem": idempotency_key,
+        },
     )
     run_id: UUID = result.scalar_one()
     return run_id

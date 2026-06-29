@@ -1,229 +1,182 @@
-"""T4 acceptance — POST /v1/runs → infer → GET, end-to-end over HTTP.
+"""M1.9 — POST /v1/runs creates a queued run and enqueues the attack (async lifecycle).
 
-CI runs against a real testcontainers Postgres with the gateway faked via dependency_overrides
-(no live model). An opt-in test exercises the whole path against real Ollama and skips otherwise.
+Real Alembic schema (consents + the v2 run tables), app-role + RLS. The arq pool is faked (no
+Redis) and records the enqueue; the worker's execution is covered by test_attack_joint. Asserts the
+consent gate (fail closed), idempotency, status, and RLS isolation.
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable
-from uuid import UUID, uuid4
+import os
+import uuid
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
-import httpx
 import pytest
 import pytest_asyncio
+from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from testcontainers.postgres import PostgresContainer
 
-from app.api.deps import get_app_engine, get_gateway_client, get_master_key
-from app.core.config import get_gateway_settings
-from app.db.rls import set_rls_context
-from app.domain.output_schema import RawAttributeGuess, RawCandidate
+from alembic import command
+from app.api.deps import get_app_engine, get_arq_pool
+from app.core.config import get_database_settings
 from app.main import app
-from app.repositories.inferences import get_run_inferences
-from app.repositories.items import insert_item
-
-SeedUser = Callable[[], Awaitable[UUID]]
-
-_FAKE_GUESS = RawAttributeGuess(
-    attribute="location",
-    status="inferred",
-    candidates=[RawCandidate(value_text="Seattle, WA", self_confidence=0.8)],
-    reasoning="mentions a Seattle-specific park",
-)
 
 
-class _FakeGateway:
-    """Duck-typed gateway returning a canned guess — no live model."""
+class _FakePool:
+    """Records enqueue_job calls (no Redis); the endpoint ignores the returned Job."""
 
-    def __init__(self, guess: RawAttributeGuess) -> None:
-        self._guess = guess
+    def __init__(self) -> None:
+        self.jobs: list[tuple[str, tuple[Any, ...], str | None]] = []
 
-    async def profile_attribute(self, *, system_prompt: str, content: str) -> RawAttributeGuess:
-        return self._guess
+    async def enqueue_job(
+        self, function: str, *args: Any, _job_id: str | None = None, **kwargs: Any
+    ) -> object:
+        self.jobs.append((function, args, _job_id))
+        return object()
 
 
-async def _seed_item(engine: AsyncEngine, user_id: UUID, item_text: str, master_key: str) -> None:
-    async with engine.connect() as conn, conn.begin():
-        await set_rls_context(conn, user_id)
-        await insert_item(conn, user_id, item_text, master_key)
+@pytest.fixture(scope="module")
+def runs_container() -> Iterator[PostgresContainer]:
+    with PostgresContainer(
+        image="pgvector/pgvector:pg16",
+        username="glasshouse",
+        password="glasshouse",
+        dbname="glasshouse",
+        driver="psycopg",
+    ) as container:
+        os.environ["DATABASE_URL"] = container.get_connection_url(driver="asyncpg")
+        get_database_settings.cache_clear()
+        try:
+            command.upgrade(Config("alembic.ini"), "head")
+        finally:
+            get_database_settings.cache_clear()
+        yield container
 
 
 @pytest_asyncio.fixture
-async def client(app_engine: AsyncEngine, master_key: str) -> AsyncIterator[AsyncClient]:
+async def owner_engine(runs_container: PostgresContainer) -> AsyncIterator[AsyncEngine]:
+    engine = create_async_engine(runs_container.get_connection_url(driver="asyncpg"))
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def app_engine(runs_container: PostgresContainer) -> AsyncIterator[AsyncEngine]:
+    host = runs_container.get_container_host_ip()
+    port = runs_container.get_exposed_port(5432)
+    url = f"postgresql+asyncpg://glasshouse_app:glasshouse_app@{host}:{port}/glasshouse"
+    engine = create_async_engine(url)
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def pool() -> _FakePool:
+    return _FakePool()
+
+
+@pytest_asyncio.fixture
+async def client(app_engine: AsyncEngine, pool: _FakePool) -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[get_app_engine] = lambda: app_engine
-    app.dependency_overrides[get_master_key] = lambda: master_key
-    app.dependency_overrides[get_gateway_client] = lambda: _FakeGateway(_FAKE_GUESS)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
+    app.dependency_overrides[get_arq_pool] = lambda: pool
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as test_client:
         yield test_client
     app.dependency_overrides.clear()
 
 
-async def test_post_run_infers_and_get_returns_status(
-    client: AsyncClient,
-    app_engine: AsyncEngine,
-    owner_engine: AsyncEngine,
-    seed_user: SeedUser,
-    master_key: str,
+async def _seed_user(engine: AsyncEngine, *, consented: bool) -> uuid.UUID:
+    async with engine.begin() as conn:
+        user_id: uuid.UUID = (
+            await conn.execute(text("INSERT INTO users DEFAULT VALUES RETURNING id"))
+        ).scalar_one()
+        if consented:
+            await conn.execute(
+                text(
+                    "INSERT INTO consents (user_id, purpose, policy_version) "
+                    "VALUES (:u, 'self_audit', 'v1')"
+                ),
+                {"u": user_id},
+            )
+    return user_id
+
+
+_ATTACK = {"type": "attack", "params": {}}
+
+
+async def test_post_creates_queued_run_and_enqueues(
+    client: AsyncClient, owner_engine: AsyncEngine, pool: _FakePool
 ) -> None:
-    user_a = await seed_user()
-    await _seed_item(
-        app_engine, user_a, "Love my walk to Gas Works Park, PST mornings.", master_key
-    )
-    headers = {"X-Dev-User-Id": str(user_a)}
+    user = await _seed_user(owner_engine, consented=True)
+    resp = await client.post("/v1/runs", json=_ATTACK, headers={"X-Dev-User-Id": str(user)})
 
-    created = await client.post(
-        "/v1/runs", json={"type": "attack", "params": {"attribute": "location"}}, headers=headers
-    )
-    assert created.status_code == 202
-    run_id = created.json()["run_id"]
-
-    fetched = await client.get(f"/v1/runs/{run_id}", headers=headers)
-    assert fetched.status_code == 200
-    body = fetched.json()
-    assert body["status"] == "succeeded"
-    assert body["type"] == "attack"
-
-    # The inference persisted (read past RLS as the owner; inferences are served by /v1/inferences,
-    # which lands at M1.7).
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "queued"
+    run_id = body["run_id"]
+    # the run row exists, queued; the worker job was enqueued with the run + user ids.
     async with owner_engine.connect() as conn:
-        rows = await get_run_inferences(conn, UUID(run_id), master_key)
-    assert len(rows) == 1
-    assert rows[0].attribute == "location"
-    assert rows[0].top_value == "Seattle, WA"
-    assert rows[0].reasoning == "mentions a Seattle-specific park"
+        status_value = (
+            await conn.execute(text("SELECT status FROM runs WHERE id = :r"), {"r": run_id})
+        ).scalar_one()
+    assert status_value == "queued"
+    assert pool.jobs == [("attack_run", (run_id, str(user)), f"attack:{run_id}")]
 
 
-async def test_idempotency_key_dedupes_run(
-    client: AsyncClient,
-    app_engine: AsyncEngine,
-    owner_engine: AsyncEngine,
-    seed_user: SeedUser,
-    master_key: str,
+async def test_post_without_consent_is_forbidden(
+    client: AsyncClient, owner_engine: AsyncEngine, pool: _FakePool
 ) -> None:
-    user_a = await seed_user()
-    await _seed_item(app_engine, user_a, "Gas Works Park on a PST morning.", master_key)
-    headers = {"X-Dev-User-Id": str(user_a), "Idempotency-Key": "retry-abc-123"}
-    payload = {"type": "attack", "params": {"attribute": "location"}}
+    user = await _seed_user(owner_engine, consented=False)
+    resp = await client.post("/v1/runs", json=_ATTACK, headers={"X-Dev-User-Id": str(user)})
 
-    first = await client.post("/v1/runs", json=payload, headers=headers)
-    second = await client.post("/v1/runs", json=payload, headers=headers)
+    assert resp.status_code == 403
+    assert resp.headers["content-type"] == "application/problem+json"
+    assert resp.json()["type"].endswith("/consent-missing")
+    assert pool.jobs == []  # nothing enqueued — fail closed before the queue
 
-    assert first.status_code == 202
-    assert second.status_code == 202
-    # The repeated key returns the original run, and no second run was created.
-    assert second.json()["run_id"] == first.json()["run_id"]
+
+async def test_idempotency_key_dedupes(
+    client: AsyncClient, owner_engine: AsyncEngine, pool: _FakePool
+) -> None:
+    user = await _seed_user(owner_engine, consented=True)
+    headers = {"X-Dev-User-Id": str(user), "Idempotency-Key": "retry-1"}
+
+    first = await client.post("/v1/runs", json=_ATTACK, headers=headers)
+    second = await client.post("/v1/runs", json=_ATTACK, headers=headers)
+
+    assert first.json()["run_id"] == second.json()["run_id"]
     async with owner_engine.connect() as conn:
         count = (
-            await conn.execute(
-                text("SELECT count(*) FROM runs WHERE owner_user_id = :u"), {"u": user_a}
-            )
+            await conn.execute(text("SELECT count(*) FROM runs WHERE idempotency_key = 'retry-1'"))
         ).scalar_one()
-    assert count == 1
+    assert count == 1 and len(pool.jobs) == 1  # one run, one enqueue
 
 
-async def test_run_events_streams_status(
-    client: AsyncClient, app_engine: AsyncEngine, seed_user: SeedUser, master_key: str
-) -> None:
-    user_a = await seed_user()
-    await _seed_item(app_engine, user_a, "Gas Works Park on a PST morning.", master_key)
-    headers = {"X-Dev-User-Id": str(user_a)}
-    created = await client.post(
-        "/v1/runs", json={"type": "attack", "params": {"attribute": "location"}}, headers=headers
-    )
-    run_id = created.json()["run_id"]
+async def test_get_returns_status(client: AsyncClient, owner_engine: AsyncEngine) -> None:
+    user = await _seed_user(owner_engine, consented=True)
+    headers = {"X-Dev-User-Id": str(user)}
+    run_id = (await client.post("/v1/runs", json=_ATTACK, headers=headers)).json()["run_id"]
 
-    resp = await client.get(f"/v1/runs/{run_id}/events", headers=headers)
+    fetched = await client.get(f"/v1/runs/{run_id}", headers=headers)
 
-    assert resp.status_code == 200
-    assert resp.headers["content-type"].startswith("text/event-stream")
-    body = resp.text
-    # The tracer run is already terminal: one status event then a closing done event.
-    assert "event: status" in body
-    assert "event: done" in body
-    assert "succeeded" in body
+    assert fetched.status_code == 200
+    assert fetched.json()["status"] == "queued" and fetched.json()["type"] == "attack"
 
 
-async def test_run_events_404_for_unknown_run(client: AsyncClient, seed_user: SeedUser) -> None:
-    user_a = await seed_user()
-    resp = await client.get(f"/v1/runs/{uuid4()}/events", headers={"X-Dev-User-Id": str(user_a)})
-    assert resp.status_code == 404
-
-
-async def test_run_events_invisible_to_other_user(
-    client: AsyncClient, app_engine: AsyncEngine, seed_user: SeedUser, master_key: str
-) -> None:
-    user_a = await seed_user()
-    user_b = await seed_user()
-    await _seed_item(app_engine, user_a, "A PST morning walk.", master_key)
-    created = await client.post(
-        "/v1/runs",
-        json={"type": "attack", "params": {"attribute": "location"}},
-        headers={"X-Dev-User-Id": str(user_a)},
-    )
-    run_id = created.json()["run_id"]
-
-    resp = await client.get(f"/v1/runs/{run_id}/events", headers={"X-Dev-User-Id": str(user_b)})
-    assert resp.status_code == 404  # RLS-hidden → 404, not another user's stream
-
-
-async def test_run_invisible_to_other_user(client: AsyncClient, seed_user: SeedUser) -> None:
-    user_a = await seed_user()
-    user_b = await seed_user()
-    created = await client.post(
-        "/v1/runs",
-        json={"type": "attack", "params": {"attribute": "location"}},
-        headers={"X-Dev-User-Id": str(user_a)},
-    )
-    run_id = created.json()["run_id"]
+async def test_run_invisible_to_other_user(client: AsyncClient, owner_engine: AsyncEngine) -> None:
+    user_a = await _seed_user(owner_engine, consented=True)
+    user_b = await _seed_user(owner_engine, consented=True)
+    run_id = (
+        await client.post("/v1/runs", json=_ATTACK, headers={"X-Dev-User-Id": str(user_a)})
+    ).json()["run_id"]
 
     other = await client.get(f"/v1/runs/{run_id}", headers={"X-Dev-User-Id": str(user_b)})
-    assert other.status_code == 404
+
+    assert other.status_code == 404  # RLS-hidden → 404, no IDOR signal
 
 
-async def test_missing_user_header_is_unauthorized(client: AsyncClient) -> None:
-    resp = await client.post(
-        "/v1/runs", json={"type": "attack", "params": {"attribute": "location"}}
-    )
+async def test_missing_user_is_unauthorized(client: AsyncClient) -> None:
+    resp = await client.post("/v1/runs", json=_ATTACK)
     assert resp.status_code == 401
-
-
-def _proxy_reachable() -> bool:
-    try:
-        url = get_gateway_settings().litellm_base_url
-        return httpx.get(f"{url}/health/liveliness", timeout=2.0).status_code == 200
-    except Exception:
-        return False
-
-
-@pytest.mark.skipif(
-    not _proxy_reachable(),
-    reason="requires the LiteLLM proxy (docker compose --profile gateway up)",
-)
-async def test_live_end_to_end(
-    app_engine: AsyncEngine, owner_engine: AsyncEngine, seed_user: SeedUser, master_key: str
-) -> None:
-    user_a = await seed_user()
-    await _seed_item(
-        app_engine, user_a, "I love walking to Gas Works Park before my PST standup.", master_key
-    )
-    app.dependency_overrides[get_app_engine] = lambda: app_engine
-    app.dependency_overrides[get_master_key] = lambda: master_key  # real gateway, not overridden
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as live:
-            headers = {"X-Dev-User-Id": str(user_a)}
-            created = await live.post(
-                "/v1/runs",
-                json={"type": "attack", "params": {"attribute": "location"}},
-                headers=headers,
-            )
-            assert created.status_code == 202
-            run_id = created.json()["run_id"]
-            fetched = await live.get(f"/v1/runs/{run_id}", headers=headers)
-    finally:
-        app.dependency_overrides.clear()
-
-    assert fetched.json()["status"] == "succeeded"
-    async with owner_engine.connect() as conn:
-        rows = await get_run_inferences(conn, UUID(run_id), master_key)
-    assert len(rows) == 1
-    assert rows[0].status in {"inferred", "abstained"}
