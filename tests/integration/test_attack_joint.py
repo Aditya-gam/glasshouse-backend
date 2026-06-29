@@ -5,6 +5,7 @@ emission guesses; we assert the normalizer + persistence: Art. 9 values encrypte
 as JSONB, fabricated evidence refs dropped, reasoning encrypted at rest.
 """
 
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterable, Iterator
@@ -23,6 +24,7 @@ from app.db.rls import set_rls_context
 from app.domain.output_schema import RawAttributeGuess, RawCandidate, RawEvidence
 from app.ingestion.base import Method, ParsedTextRecord, Platform
 from app.retrieval.embedder import EMBEDDING_DIM
+from app.services.geocoding import GeoResolution
 from app.services.inference import run_text_attack
 from app.services.ingestion import ingest_and_persist
 
@@ -41,6 +43,17 @@ class _FakeEmbedder:
 class _FakeDetector:
     def has_identifying_signal(self, text: str) -> bool:
         return False
+
+
+class _FakeGeocoder:
+    """Resolves the two canned places deterministically; everything else misses (no network)."""
+
+    async def resolve(self, place: str) -> GeoResolution | None:
+        if "Seattle" in place:
+            return GeoResolution(5809844, "city", country="US", region="Washington", city="Seattle")
+        if "Porto" in place:
+            return GeoResolution(2735943, "city", country="PT", region="Porto", city="Porto")
+        return None
 
 
 class _FakeAdapter:
@@ -159,6 +172,7 @@ async def test_joint_attack_persists_canonical_inferences(
             _FakeProfiler(str(item_id)),
             _FakeEmbedder(),
             _FakeDetector(),
+            _FakeGeocoder(),
             owner_user_id=user_id,
             master_key=_MASTER_KEY,
         )
@@ -217,6 +231,10 @@ async def test_joint_attack_persists_canonical_inferences(
     bp_value, bp_value_ct, bp_decrypted = bp
     assert bp_value is None and bp_value_ct is not None
     assert "Porto" in bp_decrypted  # the Art. 9 value round-trips
+    # M1.7b: the geocoder enriched both geo_hier values with a resolved GeoNames id.
+    loc_payload = loc_value if isinstance(loc_value, dict) else json.loads(loc_value)
+    assert loc_payload["geonames_id"] == 5809844 and loc_payload["precision_level"] == "city"
+    assert json.loads(bp_decrypted)["geonames_id"] == 2735943  # Art. 9 geo resolves too
     # anti-fabrication: the bogus ref was dropped, only the real item persisted.
     assert loc_evidence == 1
     assert loc_reasoning == "names Seattle-specific places"

@@ -23,6 +23,7 @@ dependencies = [
     "fastembed>=0.4",
     "presidio-analyzer>=2.2",
     "tiktoken>=0.8",
+    "geopy>=2.4.1",
 ]
 
 [dependency-groups]
@@ -64,6 +65,7 @@ module = [
     "fastembed.*",
     "presidio_analyzer.*",
     "tiktoken.*",
+    "geopy.*",
 ]
 ignore_missing_imports = true
 
