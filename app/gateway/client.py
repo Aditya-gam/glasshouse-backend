@@ -20,7 +20,9 @@ from app.gateway.slots import Slot
 class Profiler(Protocol):
     """The joint-pass capability the attack service needs (GatewayClient + test fakes conform)."""
 
-    async def profile_all(self, *, content: str) -> list[RawAttributeGuess]: ...
+    async def profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]: ...
 
 
 class GatewayClient:
@@ -53,18 +55,22 @@ class GatewayClient:
         )
         return guess
 
-    async def profile_all(self, *, content: str) -> list[RawAttributeGuess]:
+    async def profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
         """The joint pass: one profiler-slot call inferring all 8 attributes (M1.7).
 
         `content` is the datamarked user prompt (gateway/prompts.build_user_prompt); the system
-        prompt is `attack_text_v1`. Returns the emission guesses; the normalizer canonicalizes them.
+        prompt is `attack_text_v1`. `temperature` is 0 for the deterministic dev pass and raised
+        for the self-consistency ensemble's N runs (confidence-and-self-consistency.md §2). Returns
+        the emission guesses; the normalizer canonicalizes them.
         """
         slot: Slot = "profiler"
         output: RawProfilerOutput = await self._client.chat.completions.create(
             model=slot,
             response_model=RawProfilerOutput,
             max_retries=self._settings.gateway_max_retries,
-            temperature=0,
+            temperature=temperature,
             messages=[
                 {"role": "system", "content": ATTACK_TEXT_SYSTEM},
                 {"role": "user", "content": content},

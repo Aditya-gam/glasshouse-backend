@@ -101,6 +101,21 @@ class GeocodingSettings(BaseSettings):
     geonames_timeout: float = 5.0  # seconds; a slow free API must not stall the run
 
 
+class AttackSettings(BaseSettings):
+    """Self-consistency ensemble (confidence-and-self-consistency.md §2, §7).
+
+    The canonical text inference is the N-run majority; `confidence.raw` = the agreement fraction.
+    Changing `n_runs` or `sampling_temperature` is an **engine change** → recompute calibration.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", env_prefix="ATTACK_", extra="ignore"
+    )
+
+    n_runs: int = 3  # text default (confidence doc §2); 1 = dev/fast (self_reported, no ensemble)
+    sampling_temperature: float = 0.7  # temp>0 so runs can differ (agreement → raw confidence)
+
+
 @lru_cache
 def get_app_settings() -> AppSettings:
     return AppSettings()
@@ -134,3 +149,8 @@ def get_gateway_settings() -> GatewaySettings:
 @lru_cache
 def get_geocoding_settings() -> GeocodingSettings:
     return GeocodingSettings()
+
+
+@lru_cache
+def get_attack_settings() -> AttackSettings:
+    return AttackSettings()
