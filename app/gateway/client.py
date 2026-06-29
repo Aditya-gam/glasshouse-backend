@@ -10,11 +10,18 @@ from typing import Protocol
 
 import instructor
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 
 from app.core.config import GatewaySettings, get_gateway_settings
 from app.domain.output_schema import RawAttributeGuess, RawProfilerOutput
-from app.gateway.prompts import ATTACK_TEXT_SYSTEM
+from app.gateway.prompts import ATTACK_TEXT_SYSTEM, JUDGE_OCCUPATION_SYSTEM
 from app.gateway.slots import Slot
+
+
+class _Equivalence(BaseModel):
+    """The judge slot's minimal emission: are two values the same? (shallow, for local models)."""
+
+    equivalent: bool
 
 
 class Profiler(Protocol):
@@ -77,3 +84,22 @@ class GatewayClient:
             ],
         )
         return output.guesses
+
+    async def judge_same(self, a: str, b: str) -> bool:
+        """Semantic-equivalence judge (the `judge` slot) — clusters occupation guesses (M1.8b).
+
+        The judge model is separate from the profiler (the slot separation chain), so a guess is not
+        de-duplicated by the same model that produced it.
+        """
+        slot: Slot = "judge"
+        result: _Equivalence = await self._client.chat.completions.create(
+            model=slot,
+            response_model=_Equivalence,
+            max_retries=self._settings.gateway_max_retries,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": JUDGE_OCCUPATION_SYSTEM},
+                {"role": "user", "content": f"A: {a}\nB: {b}\nSame profession?"},
+            ],
+        )
+        return result.equivalent

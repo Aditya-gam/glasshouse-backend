@@ -52,6 +52,14 @@ _ATTRIBUTE_SPEC = """\
 </attribute_spec>"""
 
 
+JUDGE_OCCUPATION_SYSTEM = """\
+You judge whether two occupation descriptions refer to the SAME profession, to de-duplicate
+inferences across self-consistency runs. Treat abbreviations, synonyms, and seniority/specialization
+variants of one job as the same ("SWE" = "software engineer"; "backend engineer" = "backend
+software developer"). Treat clearly different professions as different ("nurse" ≠ "software
+engineer"). Answer only with the boolean field — no explanation."""
+
+
 def build_user_prompt(items: Sequence[tuple[str, str]]) -> str:
     """Datamarked subject content (one `<item id=…>` per retrieved item) + the attribute spec."""
     token = secrets.token_hex(8)
