@@ -51,9 +51,39 @@ class _FakeGeocoder:
     async def resolve(self, place: str) -> GeoResolution | None:
         if "Seattle" in place:
             return GeoResolution(5809844, "city", country="US", region="Washington", city="Seattle")
+        if "Portland" in place:
+            return GeoResolution(5746545, "city", country="US", region="Oregon", city="Portland")
         if "Porto" in place:
             return GeoResolution(2735943, "city", country="PT", region="Porto", city="Porto")
         return None
+
+
+class _SequenceProfiler:
+    """Returns a different top location per call (2× Seattle, then Portland) to split the runs."""
+
+    def __init__(self, real_item_id: str) -> None:
+        self._real = real_item_id
+        self._calls = 0
+
+    async def profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
+        self._calls += 1
+        city = "Seattle, Washington, US" if self._calls <= 2 else "Portland, Oregon, US"
+        return [
+            RawAttributeGuess(
+                attribute="location",
+                status="inferred",
+                candidates=[
+                    RawCandidate(
+                        value_text=city,
+                        self_confidence=0.8,
+                        evidence=[RawEvidence(ref_id=self._real, quote="walk", rationale="cue")],
+                    )
+                ],
+                reasoning="location cue",
+            )
+        ]
 
 
 class _FakeAdapter:
@@ -73,7 +103,9 @@ class _FakeProfiler:
     def __init__(self, real_item_id: str) -> None:
         self._real = real_item_id
 
-    async def profile_all(self, *, content: str) -> list[RawAttributeGuess]:
+    async def profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
         return [
             RawAttributeGuess(
                 attribute="location",
@@ -238,3 +270,67 @@ async def test_joint_attack_persists_canonical_inferences(
     # anti-fabrication: the bogus ref was dropped, only the real item persisted.
     assert loc_evidence == 1
     assert loc_reasoning == "names Seattle-specific places"
+
+
+async def _seed_user_and_item(
+    owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Provision a user + DEK and persist one item; return (user_id, item_id)."""
+    async with owner_engine.begin() as conn:
+        user_id: uuid.UUID = (
+            await conn.execute(text("INSERT INTO users DEFAULT VALUES RETURNING id"))
+        ).scalar_one()
+        await provision_user_dek(conn, user_id, _MASTER_KEY)
+    records = [ParsedTextRecord(text="My morning walk in the city.", is_subject_authored=True)]
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user_id)
+        await ingest_and_persist(
+            conn,
+            _FakeEmbedder(),
+            _FakeAdapter(records),
+            owner_user_id=user_id,
+            master_key=_MASTER_KEY,
+        )
+    async with owner_engine.connect() as conn:
+        item_id: uuid.UUID = (
+            await conn.execute(
+                text("SELECT id FROM items WHERE owner_user_id = :u"), {"u": user_id}
+            )
+        ).scalar_one()
+    return user_id, item_id
+
+
+async def test_self_consistency_persists_agreement_fraction(
+    owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    """N=3 with a split ensemble (2× Seattle, 1× Portland) → top-1 raw 2/3, runner-up 1/3."""
+    user_id, item_id = await _seed_user_and_item(owner_engine, app_engine)
+
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user_id)
+        run_id = await run_text_attack(
+            conn,
+            _SequenceProfiler(str(item_id)),
+            _FakeEmbedder(),
+            _FakeDetector(),
+            _FakeGeocoder(),
+            owner_user_id=user_id,
+            master_key=_MASTER_KEY,
+            n_runs=3,
+        )
+
+    async with owner_engine.connect() as conn:
+        candidates = (
+            await conn.execute(
+                text(
+                    "SELECT c.rank, c.raw_confidence, c.confidence_source "
+                    "FROM inference_candidates c JOIN inferences i ON i.id = c.inference_id "
+                    "WHERE i.attribute_code = 'location' AND i.run_id = :r ORDER BY c.rank"
+                ),
+                {"r": run_id},
+            )
+        ).all()
+
+    assert [row.rank for row in candidates] == [1, 2]  # majority + runner-up
+    assert all(row.confidence_source == "self_consistency" for row in candidates)
+    assert candidates[0].raw_confidence == 2 / 3 and candidates[1].raw_confidence == 1 / 3

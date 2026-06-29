@@ -6,11 +6,14 @@ inferences. The legacy single-attribute `run_attack` (tracer, T4) stays until M1
 endpoint + retires the tracer schema. Content is decrypted in memory only and never logged.
 """
 
+from collections import defaultdict
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.core.config import get_attack_settings
 from app.domain.attributes import BY_CODE
+from app.domain.consistency import aggregate
 from app.domain.normalize import normalize_guess
 from app.domain.output_schema import AttributeCode, AttributeGuess
 from app.gateway.client import GatewayClient, Profiler
@@ -148,8 +151,21 @@ async def run_text_attack(
     *,
     owner_user_id: UUID,
     master_key: str,
+    n_runs: int | None = None,
+    temperature: float | None = None,
 ) -> UUID:
-    """Joint text attack (M1.7): retrieve → infer 8 → normalize → geocode → persist. RLS-scoped."""
+    """Self-consistency text attack (M1.8): retrieve → N runs (temp>0) → normalize → geocode →
+    cluster by meaning → persist the consensus (raw = agreement fraction). N=1 is the dev/fast
+    single self_reported pass at temp 0. RLS-scoped; content decrypted in memory, never logged.
+    """
+    settings = get_attack_settings()
+    runs = n_runs if n_runs is not None else settings.n_runs
+    # N=1 dev/fast is deterministic (temp 0); the ensemble samples at temp>0 so runs can differ.
+    temp = (
+        0.0
+        if runs < 2
+        else (temperature if temperature is not None else settings.sampling_temperature)
+    )
     profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
     run_id = await runs_repo.insert_run_v2(
         conn, profile_id, run_type="attack", status="running", engine_version=ENGINE_VERSION
@@ -157,11 +173,21 @@ async def run_text_attack(
     evidence = await retrieve_evidence(conn, embedder, pii_detector, master_key=master_key)
     valid_item_ids = {item.id for item in evidence}
     content = build_user_prompt([(str(item.id), item.text) for item in evidence])
-    for raw in await gateway.profile_all(content=content):
-        guess = await enrich_geo(normalize_guess(raw), geocoder)  # GeoNames resolves geo_hier (IO)
+
+    by_attribute: dict[AttributeCode, list[AttributeGuess]] = defaultdict(list)
+    for _ in range(runs):
+        seen: set[AttributeCode] = set()
+        for raw in await gateway.profile_all(content=content, temperature=temp):
+            if raw.attribute in seen:  # one guess per attribute per run → the denominator stays N
+                continue
+            seen.add(raw.attribute)
+            by_attribute[raw.attribute].append(await enrich_geo(normalize_guess(raw), geocoder))
+
+    for attribute, guesses in by_attribute.items():
+        consensus = aggregate(attribute, guesses, n_runs=runs) if runs >= 2 else guesses[0]
         await persist_attribute_guess(
             conn,
-            guess,
+            consensus,
             valid_item_ids=valid_item_ids,
             owner_user_id=owner_user_id,
             profile_id=profile_id,
