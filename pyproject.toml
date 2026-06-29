@@ -67,6 +67,7 @@ module = [
     "presidio_analyzer.*",
     "tiktoken.*",
     "geopy.*",
+    "arq.*",
 ]
 ignore_missing_imports = true
 

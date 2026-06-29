@@ -34,6 +34,14 @@ class DatabaseSettings(BaseSettings):
     )
 
 
+class RedisSettings(BaseSettings):
+    """Redis backing the arq queue (the attack/eval/remediation run lifecycle)."""
+
+    model_config = _ENV
+
+    redis_url: str = "redis://localhost:6379"
+
+
 class CryptoSettings(BaseSettings):
     """Field-encryption master key (env MASTER_KEY). MVP env key → KMS-derived in prod."""
 
@@ -124,6 +132,11 @@ def get_app_settings() -> AppSettings:
 @lru_cache
 def get_database_settings() -> DatabaseSettings:
     return DatabaseSettings()
+
+
+@lru_cache
+def get_redis_settings() -> RedisSettings:
+    return RedisSettings()
 
 
 @lru_cache
