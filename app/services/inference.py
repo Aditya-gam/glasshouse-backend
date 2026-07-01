@@ -1,9 +1,9 @@
 """Attack service — retrieve → infer → normalize → persist.
 
-`run_text_attack` is the M1.7 joint pass (the path M1.9's arq worker will call): the Retriever's
-evidence set → one profiler call inferring all 8 attributes → the normalizer → persisted canonical
-inferences. The legacy single-attribute `run_attack` (tracer, T4) stays until M1.9 rewires the
-endpoint + retires the tracer schema. Content is decrypted in memory only and never logged.
+The joint pass: the Retriever's evidence set → an N-run Profiler ensemble inferring all 8 attributes
+→ the normalizer → self-consistency clustering → persisted canonical inferences + `run_metrics`.
+`create_run` (the endpoint) enqueues a queued run; the arq worker then calls `execute_attack_run`.
+Content is decrypted in memory only and never logged.
 """
 
 import time
@@ -17,10 +17,9 @@ from app.domain.attributes import BY_CODE
 from app.domain.consistency import aggregate
 from app.domain.normalize import normalize_guess
 from app.domain.output_schema import AttributeCode, AttributeGuess
-from app.gateway.client import GatewayClient, Profiler
+from app.gateway.client import Profiler
 from app.gateway.prompts import ENGINE_VERSION, build_user_prompt
 from app.repositories import inferences as inferences_repo
-from app.repositories import items as items_repo
 from app.repositories import profiles as profiles_repo
 from app.repositories import run_metrics as run_metrics_repo
 from app.repositories import runs as runs_repo
@@ -29,57 +28,6 @@ from app.retrieval.pii import PiiDetector
 from app.retrieval.retriever import retrieve_evidence
 from app.services.geocoding import Geocoder, enrich_geo
 from app.services.occupation import OccupationJudge, StringMatchJudge, aggregate_occupation
-
-# The (model + prompt) pin for the tracer path; the real engine_version is ENGINE_VERSION (M1.7).
-_TRACER_ENGINE_VERSION = "tracer-profiler@qwen2.5"
-
-_PROFILER_PROMPT = (
-    "You are a privacy auditor analysing a person's own public posts. "
-    "Infer their single most likely {attribute}. Return candidates "
-    "(value_text, self_confidence 0-1, evidence) best-first, or status=abstained "
-    "with no candidates if there is no signal."
-)
-
-
-async def run_attack(
-    conn: AsyncConnection,
-    gateway: GatewayClient,
-    *,
-    owner_user_id: UUID,
-    attribute: AttributeCode,
-    master_key: str,
-    idempotency_key: str | None = None,
-) -> UUID:
-    """Tracer single-attribute pass (T4) — retained until M1.9 rewires the endpoint."""
-    run_id = await runs_repo.create_run(
-        conn,
-        owner_user_id,
-        run_type="attack",
-        status="running",
-        engine_version=_TRACER_ENGINE_VERSION,
-        idempotency_key=idempotency_key,
-    )
-
-    texts = await items_repo.get_items_text(conn, master_key)
-    guess = await gateway.profile_attribute(
-        system_prompt=_PROFILER_PROMPT.format(attribute=attribute),
-        content="\n\n".join(texts),
-    )
-    top_value = guess.candidates[0].value_text if guess.candidates else None
-
-    await inferences_repo.insert_inference(
-        conn,
-        owner_user_id,
-        guess.attribute,
-        guess.reasoning or "",
-        master_key,
-        run_id=run_id,
-        top_value_text=top_value,
-        status=guess.status,
-    )
-    await runs_repo.set_run_status(conn, run_id, "succeeded", finished=True)
-    return run_id
-
 
 # --- M1.7 joint attack -----------------------------------------------------------------------
 
@@ -175,7 +123,8 @@ async def execute_attack_run(
         if runs < 2
         else (temperature if temperature is not None else settings.sampling_temperature)
     )
-    await runs_repo.set_run_status(conn, run_id, "running")
+    if not await runs_repo.set_run_status_where(conn, run_id, "running", allowed_from=("queued",)):
+        return  # not claimable (canceled before pickup, or already running) — do nothing
     started = time.monotonic()
     profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
     evidence = await retrieve_evidence(conn, embedder, pii_detector, master_key=master_key)
@@ -213,7 +162,10 @@ async def execute_attack_run(
     await run_metrics_repo.insert_run_metrics(
         conn, run_id=run_id, latency_ms=latency_ms, model_calls=runs
     )
-    await runs_repo.set_run_status(conn, run_id, "succeeded", finished=True)
+    # succeeded only from running — a cancel that landed mid-run keeps the run canceled.
+    await runs_repo.set_run_status_where(
+        conn, run_id, "succeeded", allowed_from=("running",), finished=True
+    )
 
 
 async def run_text_attack(

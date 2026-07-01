@@ -1,7 +1,8 @@
-"""Runs endpoints. POST + GET are live (from T4); list/SSE/cancel are contract-first stubs.
+"""Runs endpoints. POST enqueues the async attack (202 + run_id); GET/SSE poll status; cancel
+marks a non-terminal run canceled. `list` is a contract-first stub (M5.2).
 
-POST creates and (for the tracer) runs the attack synchronously, returning the published
-202 + {run_id} shape; M1.9 moves execution onto the arq queue with no contract change.
+POST consent-gates → creates a `queued` run → enqueues the arq worker (`app.workers.attack`),
+which runs the joint self-consistency attack and drives the queued → running → terminal lifecycle.
 """
 
 import asyncio
@@ -173,7 +174,19 @@ async def run_events(
 
 @router.post("/{run_id}:cancel", status_code=status.HTTP_202_ACCEPTED)
 async def cancel_run(
-    run_id: UUID, user_id: Annotated[UUID, Depends(get_current_user)]
+    run_id: UUID,
+    conn: Annotated[AsyncConnection, Depends(get_scoped_session)],
 ) -> RunStatus:
-    """Request cancellation — lands with the arq worker (M1.9)."""
-    raise NotImplementedYet("run cancellation lands with M1.9")
+    """Request cancellation. A queued/running run is marked `canceled` (the worker won't start, or
+    won't finish, a canceled run); a terminal run is unchanged. 404 if absent or RLS-hidden.
+
+    The transition is status-guarded, so it never overwrites a run that finished concurrently —
+    the re-read returns the run's true current status.
+    """
+    await runs_repo.set_run_status_where(
+        conn, run_id, "canceled", allowed_from=("queued", "running"), finished=True
+    )
+    run = await runs_repo.get_run(conn, run_id)
+    if run is None:
+        raise NotFound("run not found")
+    return RunStatus(id=run.id, type=run.type, status=run.status, engine_version=run.engine_version)

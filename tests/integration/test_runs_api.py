@@ -20,8 +20,14 @@ from testcontainers.postgres import PostgresContainer
 
 from alembic import command
 from app.api.deps import get_app_engine, get_arq_pool
+from app.api.errors import NotFound
+from app.api.v1.runs import cancel_run
 from app.core.config import get_database_settings
+from app.db.rls import set_rls_context
+from app.gateway.prompts import ENGINE_VERSION
 from app.main import app
+from app.repositories.profiles import get_or_create_self_profile
+from app.repositories.runs import insert_run_v2
 
 
 class _FakePool:
@@ -180,3 +186,89 @@ async def test_run_invisible_to_other_user(client: AsyncClient, owner_engine: As
 async def test_missing_user_is_unauthorized(client: AsyncClient) -> None:
     resp = await client.post("/v1/runs", json=_ATTACK)
     assert resp.status_code == 401
+
+
+async def test_run_events_streams_status(client: AsyncClient, owner_engine: AsyncEngine) -> None:
+    user = await _seed_user(owner_engine, consented=True)
+    headers = {"X-Dev-User-Id": str(user)}
+    run_id = (await client.post("/v1/runs", json=_ATTACK, headers=headers)).json()["run_id"]
+    async with owner_engine.begin() as conn:  # terminal so the SSE stream emits + closes at once
+        await conn.execute(
+            text("UPDATE runs SET status = 'succeeded', finished_at = now() WHERE id = :r"),
+            {"r": run_id},
+        )
+
+    resp = await client.get(f"/v1/runs/{run_id}/events", headers=headers)
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert "event: status" in resp.text and "event: done" in resp.text and "succeeded" in resp.text
+
+
+async def test_run_events_404_for_unknown_run(
+    client: AsyncClient, owner_engine: AsyncEngine
+) -> None:
+    user = await _seed_user(owner_engine, consented=True)
+    resp = await client.get(f"/v1/runs/{uuid.uuid4()}/events", headers={"X-Dev-User-Id": str(user)})
+    assert resp.status_code == 404
+
+
+async def test_cancel_run_handler(owner_engine: AsyncEngine, app_engine: AsyncEngine) -> None:
+    """Invoke the handler directly (not via ASGI): cancels a queued run; unknown → NotFound."""
+    user = await _seed_user(owner_engine, consented=True)
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user)
+        profile_id = await get_or_create_self_profile(conn, user)
+        run_id = await insert_run_v2(
+            conn, profile_id, run_type="attack", status="queued", engine_version=ENGINE_VERSION
+        )
+        result = await cancel_run(run_id, conn)
+        assert result.status == "canceled"
+
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user)
+        with pytest.raises(NotFound):
+            await cancel_run(uuid.uuid4(), conn)
+
+
+async def test_cancel_marks_queued_run_canceled(
+    client: AsyncClient, owner_engine: AsyncEngine
+) -> None:
+    user = await _seed_user(owner_engine, consented=True)
+    headers = {"X-Dev-User-Id": str(user)}
+    run_id = (await client.post("/v1/runs", json=_ATTACK, headers=headers)).json()["run_id"]
+
+    resp = await client.post(f"/v1/runs/{run_id}:cancel", headers=headers)
+
+    assert resp.status_code == 202 and resp.json()["status"] == "canceled"
+    async with owner_engine.connect() as conn:
+        status_value = (
+            await conn.execute(text("SELECT status FROM runs WHERE id = :r"), {"r": run_id})
+        ).scalar_one()
+    assert status_value == "canceled"
+
+
+async def test_cancel_unknown_run_is_404(client: AsyncClient, owner_engine: AsyncEngine) -> None:
+    user = await _seed_user(owner_engine, consented=True)
+    resp = await client.post(
+        f"/v1/runs/{uuid.uuid4()}:cancel", headers={"X-Dev-User-Id": str(user)}
+    )
+    assert resp.status_code == 404
+
+
+async def test_cancel_terminal_run_is_unchanged(
+    client: AsyncClient, owner_engine: AsyncEngine
+) -> None:
+    """Cancelling a run that already finished must return its terminal status, not overwrite it."""
+    user = await _seed_user(owner_engine, consented=True)
+    headers = {"X-Dev-User-Id": str(user)}
+    run_id = (await client.post("/v1/runs", json=_ATTACK, headers=headers)).json()["run_id"]
+    async with owner_engine.begin() as conn:  # simulate the worker having finished the run
+        await conn.execute(
+            text("UPDATE runs SET status = 'succeeded', finished_at = now() WHERE id = :r"),
+            {"r": run_id},
+        )
+
+    resp = await client.post(f"/v1/runs/{run_id}:cancel", headers=headers)
+
+    assert resp.status_code == 202 and resp.json()["status"] == "succeeded"  # guard: not clobbered

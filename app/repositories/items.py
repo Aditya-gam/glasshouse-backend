@@ -14,57 +14,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 
-async def insert_item(
-    conn: AsyncConnection, owner_user_id: UUID, plaintext: str, master_key: str
-) -> UUID:
-    """Insert one encrypted item; return its id. Caller sets the RLS context first."""
-    result = await conn.execute(
-        text(
-            "INSERT INTO items (owner_user_id, text_ct, content_hmac) "
-            "VALUES (:owner, encrypt_field(:owner, :plaintext, :mk), "
-            "        encode(hmac(:plaintext, :mk, 'sha256'), 'hex')) "
-            "RETURNING id"
-        ),
-        {"owner": owner_user_id, "plaintext": plaintext, "mk": master_key},
-    )
-    item_id: UUID = result.scalar_one()
-    return item_id
-
-
-async def get_item_text(conn: AsyncConnection, item_id: UUID, master_key: str) -> str | None:
-    """Return the decrypted text, or None if the row is absent or RLS-hidden."""
-    result = await conn.execute(
-        text("SELECT decrypt_field(owner_user_id, text_ct, :mk) FROM items WHERE id = :id"),
-        {"id": item_id, "mk": master_key},
-    )
-    row = result.first()
-    if row is None:
-        return None
-    plaintext: str = row[0]
-    return plaintext
-
-
-async def list_item_ids(conn: AsyncConnection) -> list[UUID]:
-    """All item ids visible under the current RLS context (empty if unscoped)."""
-    result = await conn.execute(text("SELECT id FROM items ORDER BY created_at"))
-    return [row[0] for row in result]
-
-
-async def get_items_text(conn: AsyncConnection, master_key: str) -> list[str]:
-    """Decrypted text of the current user's items, oldest first (the tracer's retrieval).
-
-    The embedding/recency Retriever replaces this all-items pass at M1.6.
-    """
-    result = await conn.execute(
-        text("SELECT decrypt_field(owner_user_id, text_ct, :mk) FROM items ORDER BY created_at"),
-        {"mk": master_key},
-    )
-    return [row[0] for row in result]
-
-
-# --- v2 ingestion persist (M1.3) -------------------------------------------------------------
-
-
 def _to_pgvector(embedding: list[float]) -> str:
     """Render an embedding as a pgvector text literal for ``CAST(:embedding AS vector)``."""
     return "[" + ",".join(repr(value) for value in embedding) + "]"
