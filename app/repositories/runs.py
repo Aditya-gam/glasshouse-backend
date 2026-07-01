@@ -1,5 +1,6 @@
 """Data access for `runs` — the only place run SQL lives. Every statement is RLS-scoped."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -16,33 +17,6 @@ class RunRow:
     engine_version: str | None
     created_at: datetime
     finished_at: datetime | None
-
-
-async def create_run(
-    conn: AsyncConnection,
-    owner_user_id: UUID,
-    *,
-    run_type: str,
-    status: str,
-    engine_version: str | None,
-    idempotency_key: str | None = None,
-) -> UUID:
-    """Insert a run for the current user; return its id."""
-    result = await conn.execute(
-        text(
-            "INSERT INTO runs (owner_user_id, type, status, engine_version, idempotency_key) "
-            "VALUES (:owner, :type, :status, :ev, :idem) RETURNING id"
-        ),
-        {
-            "owner": owner_user_id,
-            "type": run_type,
-            "status": status,
-            "ev": engine_version,
-            "idem": idempotency_key,
-        },
-    )
-    run_id: UUID = result.scalar_one()
-    return run_id
 
 
 async def insert_run_v2(
@@ -97,18 +71,30 @@ async def get_run_by_idempotency_key(conn: AsyncConnection, idempotency_key: str
     )
 
 
-async def set_run_status(
-    conn: AsyncConnection, run_id: UUID, status: str, *, finished: bool = False
-) -> None:
-    """Update a run's status; stamp `finished_at` when it reaches a terminal state."""
-    await conn.execute(
+async def set_run_status_where(
+    conn: AsyncConnection,
+    run_id: UUID,
+    status: str,
+    *,
+    allowed_from: Sequence[str],
+    finished: bool = False,
+) -> bool:
+    """Transition a run to `status` only if it is currently in `allowed_from`; True if applied.
+
+    The guard serializes the worker and the cancel endpoint on the row (a plain `WHERE id` races):
+    the worker claims `queued → running`, terminal transitions apply only from `running`, and cancel
+    applies only from `queued`/`running` — so a canceled run is never resurrected and a finished run
+    is never overwritten. Stamps `finished_at` at a terminal state.
+    """
+    result = await conn.execute(
         text(
             "UPDATE runs SET status = :status, "
             "finished_at = CASE WHEN :finished THEN now() ELSE finished_at END "
-            "WHERE id = :id"
+            "WHERE id = :id AND status = ANY(:allowed) RETURNING id"
         ),
-        {"status": status, "finished": finished, "id": run_id},
+        {"status": status, "finished": finished, "id": run_id, "allowed": list(allowed_from)},
     )
+    return result.first() is not None
 
 
 async def get_run(conn: AsyncConnection, run_id: UUID) -> RunRow | None:

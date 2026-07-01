@@ -4152,7 +4152,7 @@
     },
     "/v1/runs/{run_id}:cancel": {
       "post": {
-        "description": "Request cancellation \u2014 lands with the arq worker (M1.9).",
+        "description": "Request cancellation. A queued/running run is marked `canceled` (the worker won't start, or\nwon't finish, a canceled run); a terminal run is unchanged. 404 if absent or RLS-hidden.\n\nThe transition is status-guarded, so it never overwrites a run that finished concurrently \u2014\nthe re-read returns the run's true current status.",
         "operationId": "cancel_run_v1_runs__run_id__cancel_post",
         "parameters": [
           {

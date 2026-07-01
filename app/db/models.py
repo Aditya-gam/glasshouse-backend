@@ -1,7 +1,7 @@
 """SQLAlchemy 2.0 models for the v2 schema (03-data/database/tables/* + er-diagram.md).
 
 The authoritative ORM mapping: Alembic ``0001_init`` (M0.4) autogenerates the migration from
-these, superseding the T2 tracer schema (``scripts/tracer_schema.sql``). Two native enums
+these (the T2 tracer schema was retired at M1.9b). Two native enums
 (``role_t``, ``run_status_t``); every other controlled vocabulary is ``text`` + ``CHECK``
 (migrations.md). Mapping only — SQL lives in repositories. RLS/encryption are applied by the
 migration (M0.4); these models carry the structure (columns, types, FKs, constraints).

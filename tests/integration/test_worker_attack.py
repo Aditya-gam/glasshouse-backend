@@ -23,10 +23,12 @@ from app.db.rls import set_rls_context
 from app.domain.output_schema import RawAttributeGuess, RawCandidate
 from app.gateway.prompts import ENGINE_VERSION
 from app.ingestion.base import Method, ParsedTextRecord, Platform
+from app.repositories import runs as runs_repo
 from app.repositories.profiles import get_or_create_self_profile
 from app.repositories.runs import insert_run_v2
 from app.retrieval.embedder import EMBEDDING_DIM
 from app.services.geocoding import GeoResolution
+from app.services.inference import execute_attack_run
 from app.services.ingestion import ingest_and_persist
 from app.services.occupation import StringMatchJudge
 from app.workers import attack as attack_module
@@ -220,3 +222,83 @@ async def test_attack_run_failure_marks_failed_and_reraises(
         await attack_run({}, str(run_id), str(user_id))  # re-raises for arq retry/DLQ
 
     assert await _run_status(owner_engine, run_id) == "failed"
+
+
+@pytest.mark.usefixtures("patched_worker")
+async def test_attack_run_skips_canceled_run(
+    monkeypatch: pytest.MonkeyPatch, owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    monkeypatch.setattr(attack_module, "GatewayClient", _FakeGatewayClient)
+    user_id, run_id = await _seed(owner_engine, app_engine, consented=True)
+    async with owner_engine.begin() as conn:  # canceled before the worker picks it up
+        await conn.execute(text("UPDATE runs SET status = 'canceled' WHERE id = :r"), {"r": run_id})
+
+    await attack_run({}, str(run_id), str(user_id))  # honors the cancellation, does nothing
+
+    async with owner_engine.connect() as conn:
+        inferences = (
+            await conn.execute(
+                text("SELECT count(*) FROM inferences WHERE run_id = :r"), {"r": run_id}
+            )
+        ).scalar_one()
+    assert await _run_status(owner_engine, run_id) == "canceled" and inferences == 0
+
+
+@pytest.mark.usefixtures("patched_worker")
+async def test_cancel_does_not_clobber_a_succeeded_run(
+    monkeypatch: pytest.MonkeyPatch, owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    """A cancel that lands after the run finished must not overwrite the terminal status."""
+    monkeypatch.setattr(attack_module, "GatewayClient", _FakeGatewayClient)
+    user_id, run_id = await _seed(owner_engine, app_engine, consented=True)
+    await attack_run({}, str(run_id), str(user_id))
+    assert await _run_status(owner_engine, run_id) == "succeeded"
+
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user_id)
+        applied = await runs_repo.set_run_status_where(
+            conn, run_id, "canceled", allowed_from=("queued", "running"), finished=True
+        )
+    assert applied is False and await _run_status(owner_engine, run_id) == "succeeded"
+
+
+@pytest.mark.usefixtures("patched_worker")
+async def test_execute_attack_run_skips_a_non_queued_run(
+    owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    """The claim (queued→running) fails on a non-queued run → nothing runs or persists."""
+    user_id, run_id = await _seed(owner_engine, app_engine, consented=True)
+    async with owner_engine.begin() as conn:
+        await conn.execute(text("UPDATE runs SET status = 'canceled' WHERE id = :r"), {"r": run_id})
+
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user_id)
+        await execute_attack_run(
+            conn,
+            run_id,
+            _FakeGatewayClient(),
+            _FakeEmbedder(),
+            _FakeDetector(),
+            _FakeGeocoder(),
+            owner_user_id=user_id,
+            master_key=_MASTER_KEY,
+            allow_special_category=True,
+        )
+
+    async with owner_engine.connect() as conn:
+        inferences = (
+            await conn.execute(
+                text("SELECT count(*) FROM inferences WHERE run_id = :r"), {"r": run_id}
+            )
+        ).scalar_one()
+    assert await _run_status(owner_engine, run_id) == "canceled" and inferences == 0
+
+
+@pytest.mark.usefixtures("patched_worker")
+async def test_attack_run_is_a_noop_for_a_missing_run(
+    monkeypatch: pytest.MonkeyPatch, owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    monkeypatch.setattr(attack_module, "GatewayClient", _FakeGatewayClient)
+    user_id, _ = await _seed(owner_engine, app_engine, consented=True)
+
+    await attack_run({}, str(uuid.uuid4()), str(user_id))  # unknown run → guard returns, no error

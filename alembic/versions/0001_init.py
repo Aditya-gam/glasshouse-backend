@@ -4,7 +4,7 @@ Tables, enums, and indexes are created from ``app.db.models`` (the source of tru
 pgvector/pgcrypto extensions, the ``SECURITY DEFINER`` crypto functions, and the non-superuser
 application role. RLS policies and the owned-table grants land in **0002 (M0.5)** together with
 the isolation tests, so security-critical policies are never shipped untested — until then the
-app role has **no access to owned tables** (fail-closed). Supersedes ``scripts/tracer_schema.sql``.
+app role has **no access to owned tables** (fail-closed).
 
 Revision ID: 0001
 Revises:

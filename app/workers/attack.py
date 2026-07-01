@@ -40,6 +40,9 @@ async def attack_run(ctx: dict[Any, Any], run_id: str, owner_user_id: str) -> No
         try:
             async with conn.begin():
                 await set_rls_context(conn, owner_uuid)
+                run = await runs_repo.get_run(conn, run_uuid)
+                if run is None or run.status == "canceled":
+                    return  # canceled before pickup (or gone) — honor the cancellation, do nothing
                 await require_consent(conn, "self_audit")  # revocation is immediate → re-check here
                 allow_art9 = await has_special_category_consent(conn)
                 await execute_attack_run(
@@ -66,7 +69,12 @@ async def attack_run(ctx: dict[Any, Any], run_id: str, owner_user_id: str) -> No
 
 
 async def _mark_failed(conn: AsyncConnection, owner_uuid: UUID, run_uuid: UUID) -> None:
-    """Mark the run failed in a fresh transaction (the work transaction has rolled back)."""
+    """Mark the run failed in a fresh transaction (the work transaction has rolled back).
+
+    Only from queued/running — a run canceled in the meantime stays canceled.
+    """
     async with conn.begin():
         await set_rls_context(conn, owner_uuid)
-        await runs_repo.set_run_status(conn, run_uuid, "failed", finished=True)
+        await runs_repo.set_run_status_where(
+            conn, run_uuid, "failed", allowed_from=("queued", "running"), finished=True
+        )
