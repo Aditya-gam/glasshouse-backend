@@ -100,6 +100,16 @@ def test_categorical_synonym_maps_to_allowed() -> None:
     assert _value("education", "undergrad") == "bachelor"
 
 
+def test_relationship_synthpai_phrases_map_without_hijacking() -> None:
+    # SynthPAI labels "engaged" / "in a relationship" map into our enum...
+    assert _value("relationship", "engaged") == "in_relationship"
+    assert _value("relationship", "in a relationship") == "in_relationship"
+    assert _value("relationship", "in relationship") == "in_relationship"
+    # ...but the exact-phrase key must NOT hijack any phrase merely containing "relationship".
+    assert _value("relationship", "complicated relationship") == "complicated"
+    assert _value("relationship", "married, relationship strained") == "married"
+
+
 def test_categorical_matches_allowed() -> None:
     value = normalize_guess(_raw("relationship", "married")).candidates[0].value
     assert isinstance(value, CategoricalValue) and value.value == "married"

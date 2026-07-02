@@ -71,6 +71,21 @@ def _occupation_label(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def values_agree(attribute: AttributeCode, a: AttributeValue, b: AttributeValue) -> bool:
+    """Do two canonical values match under `attribute`'s rule (public seam; eval reuses it)?
+
+    The eval matcher (M2.2) scores a prediction against a normalized label with the *same*
+    non-geo rules used to cluster the self-consistency ensemble — so the accuracy measured on the
+    benchmark is the accuracy that calibration then maps for real users.
+    """
+    return _agree(attribute, a, b)
+
+
+def occupation_label(text: str) -> str:
+    """Normalized occupation string (public seam; the §8 string-match fallback, reused by eval)."""
+    return _occupation_label(text)
+
+
 def _self_reported(guess: AttributeGuess) -> float:
     """The model's stated confidence for this run's top-1 (the in-bucket tie-breaker, §4)."""
     confidence = guess.candidates[0].confidence
