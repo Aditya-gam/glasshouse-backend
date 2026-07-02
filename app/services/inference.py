@@ -8,6 +8,7 @@ Content is decrypted in memory only and never logged.
 
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -30,6 +31,81 @@ from app.services.geocoding import Geocoder, enrich_geo
 from app.services.occupation import OccupationJudge, StringMatchJudge, aggregate_occupation
 
 # --- M1.7 joint attack -----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProfileInference:
+    """One profile's inference pass: the consensus guesses + the evidence they may cite."""
+
+    guesses: list[AttributeGuess]
+    valid_item_ids: set[UUID]
+    model_calls: int
+
+
+def _resolve_ensemble(n_runs: int | None, temperature: float | None) -> tuple[int, float]:
+    """(runs, temperature) for the ensemble — N=1 dev/fast is deterministic (temp 0)."""
+    settings = get_attack_settings()
+    runs = n_runs if n_runs is not None else settings.n_runs
+    temp = (
+        0.0
+        if runs < 2
+        else (temperature if temperature is not None else settings.sampling_temperature)
+    )
+    return runs, temp
+
+
+async def infer_profile(
+    conn: AsyncConnection,
+    profile_id: UUID,
+    gateway: Profiler,
+    embedder: Embedder,
+    pii_detector: PiiDetector,
+    geocoder: Geocoder,
+    *,
+    master_key: str,
+    allow_special_category: bool,
+    n_runs: int | None = None,
+    temperature: float | None = None,
+    judge: OccupationJudge | None = None,
+) -> ProfileInference:
+    """The shared attack core: retrieve one profile's evidence → N-run Profiler ensemble →
+    normalize → geocode → cluster by meaning → per-attribute consensus guesses (no persistence).
+
+    Called by both the attack worker (`execute_attack_run`) and the eval service (M2.2), so the
+    engine measured on the benchmark is byte-for-byte the engine run on users (one code path).
+    Art. 9 attributes (birthplace) are produced only with `allow_special_category`. RLS-scoped;
+    content decrypted in memory, never logged.
+    """
+    occupation_judge = judge or StringMatchJudge()
+    runs, temp = _resolve_ensemble(n_runs, temperature)
+    evidence = await retrieve_evidence(
+        conn, embedder, pii_detector, profile_id=profile_id, master_key=master_key
+    )
+    valid_item_ids = {item.id for item in evidence}
+    content = build_user_prompt([(str(item.id), item.text) for item in evidence])
+
+    by_attribute: dict[AttributeCode, list[AttributeGuess]] = defaultdict(list)
+    for _ in range(runs):
+        seen: set[AttributeCode] = set()
+        for raw in await gateway.profile_all(content=content, temperature=temp):
+            if raw.attribute in seen:  # one guess per attribute per run → the denominator stays N
+                continue
+            seen.add(raw.attribute)
+            by_attribute[raw.attribute].append(await enrich_geo(normalize_guess(raw), geocoder))
+
+    guesses: list[AttributeGuess] = []
+    for attribute, attribute_guesses in by_attribute.items():
+        if BY_CODE[attribute].is_art9 and not allow_special_category:
+            continue  # Art. 9 (birthplace) needs explicit special-category consent — skip
+        if runs < 2:
+            # dev/fast: the single self_reported pass, no clustering
+            consensus = attribute_guesses[0]
+        elif attribute == "occupation":
+            consensus = await aggregate_occupation(attribute_guesses, occupation_judge, n_runs=runs)
+        else:
+            consensus = aggregate(attribute, attribute_guesses, n_runs=runs)
+        guesses.append(consensus)
+    return ProfileInference(guesses=guesses, valid_item_ids=valid_item_ids, model_calls=runs)
 
 
 def _valid_ref(ref_id: str, valid_item_ids: set[UUID]) -> UUID | None:
@@ -108,21 +184,12 @@ async def execute_attack_run(
     temperature: float | None = None,
     judge: OccupationJudge | None = None,
 ) -> None:
-    """Execute a pre-created run (M1.9 worker core): running → retrieve → N runs (temp>0) →
-    normalize → geocode → cluster by meaning → persist the consensus + run_metrics → succeeded.
+    """Execute a pre-created run (M1.9 worker core): running → `infer_profile` → persist the
+    consensus + run_metrics → succeeded.
 
     Art. 9 attributes (birthplace) are inferred only with explicit special-category consent
     (services-consent.md). RLS-scoped; content decrypted in memory, never logged.
     """
-    occupation_judge = judge or StringMatchJudge()
-    settings = get_attack_settings()
-    runs = n_runs if n_runs is not None else settings.n_runs
-    # N=1 dev/fast is deterministic (temp 0); the ensemble samples at temp>0 so runs can differ.
-    temp = (
-        0.0
-        if runs < 2
-        else (temperature if temperature is not None else settings.sampling_temperature)
-    )
     if not await runs_repo.set_run_status_where(conn, run_id, "running", allowed_from=("queued",)):
         return  # not claimable (canceled before pickup, or already running) — do nothing
     started = time.monotonic()
@@ -130,43 +197,32 @@ async def execute_attack_run(
     if run is None:  # claimed above, so only RLS mid-flight revocation can land here
         return
     # the run's own profile — not the self profile — so eval runs on benchmark profiles work too.
-    profile_id = run.profile_id
-    evidence = await retrieve_evidence(
-        conn, embedder, pii_detector, profile_id=profile_id, master_key=master_key
+    result = await infer_profile(
+        conn,
+        run.profile_id,
+        gateway,
+        embedder,
+        pii_detector,
+        geocoder,
+        master_key=master_key,
+        allow_special_category=allow_special_category,
+        n_runs=n_runs,
+        temperature=temperature,
+        judge=judge,
     )
-    valid_item_ids = {item.id for item in evidence}
-    content = build_user_prompt([(str(item.id), item.text) for item in evidence])
-
-    by_attribute: dict[AttributeCode, list[AttributeGuess]] = defaultdict(list)
-    for _ in range(runs):
-        seen: set[AttributeCode] = set()
-        for raw in await gateway.profile_all(content=content, temperature=temp):
-            if raw.attribute in seen:  # one guess per attribute per run → the denominator stays N
-                continue
-            seen.add(raw.attribute)
-            by_attribute[raw.attribute].append(await enrich_geo(normalize_guess(raw), geocoder))
-
-    for attribute, guesses in by_attribute.items():
-        if BY_CODE[attribute].is_art9 and not allow_special_category:
-            continue  # Art. 9 (birthplace) needs explicit special-category consent — skip
-        if runs < 2:
-            consensus = guesses[0]  # dev/fast: the single self_reported pass, no clustering
-        elif attribute == "occupation":
-            consensus = await aggregate_occupation(guesses, occupation_judge, n_runs=runs)
-        else:
-            consensus = aggregate(attribute, guesses, n_runs=runs)
+    for guess in result.guesses:
         await persist_attribute_guess(
             conn,
-            consensus,
-            valid_item_ids=valid_item_ids,
+            guess,
+            valid_item_ids=result.valid_item_ids,
             owner_user_id=owner_user_id,
-            profile_id=profile_id,
+            profile_id=run.profile_id,
             run_id=run_id,
             master_key=master_key,
         )
     latency_ms = int((time.monotonic() - started) * 1000)
     await run_metrics_repo.insert_run_metrics(
-        conn, run_id=run_id, latency_ms=latency_ms, model_calls=runs
+        conn, run_id=run_id, latency_ms=latency_ms, model_calls=result.model_calls
     )
     # succeeded only from running — a cancel that landed mid-run keeps the run canceled.
     await runs_repo.set_run_status_where(

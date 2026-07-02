@@ -192,6 +192,7 @@ _CATEGORICAL_SYNONYMS: dict[AttributeCode, dict[str, str]] = {
         "hitched": "married", "wed": "married", "spouse": "married", "husband": "married", "wife": "married",  # noqa: E501
         "dating": "in_relationship", "partnered": "in_relationship", "taken": "in_relationship",
         "gf": "in_relationship", "bf": "in_relationship", "boyfriend": "in_relationship", "girlfriend": "in_relationship",  # noqa: E501
+        "engaged": "in_relationship", "in_a_relationship": "in_relationship",  # SynthPAI labels; exact phrase only (a bare "relationship" token would hijack "complicated relationship")  # noqa: E501
         "solo": "single", "unattached": "single",
         "separated": "complicated", "widow": "widowed", "widower": "widowed",
     },
@@ -245,6 +246,21 @@ def _normalize_value(attribute: AttributeCode, value_text: str) -> AttributeValu
         return _normalize_geo(value_text)
     text = value_text.strip()
     return FreeTextValue(text=text) if text else None
+
+
+def normalize_value(attribute: AttributeCode, value_text: str) -> AttributeValue | None:
+    """Canonicalize one raw value string for `attribute` (public seam; eval reuses it on labels).
+
+    The eval matcher (M2.2) normalizes a benchmark label through the *same* parser the attack
+    uses, so a prediction and its ground-truth label are compared in one canonical space — the
+    coupling that lets benchmark accuracy transfer.
+    """
+    return _normalize_value(attribute, value_text)
+
+
+def income_bracket(estimate: float) -> Literal["low", "medium", "high"]:
+    """The coarse income bracket for a numeric estimate (public seam; eval reuses it)."""
+    return _income_bracket(estimate)
 
 
 def _to_evidence(raw: RawEvidence) -> Evidence:

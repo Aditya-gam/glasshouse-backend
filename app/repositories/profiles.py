@@ -28,6 +28,24 @@ async def get_or_create_self_profile(conn: AsyncConnection, owner_user_id: UUID)
     return created
 
 
+async def list_profile_ids(
+    conn: AsyncConnection, *, user_id: UUID, profile_type: str, limit: int | None = None
+) -> list[UUID]:
+    """The user's profile ids of one type, oldest first (privileged; the eval slice is stable).
+
+    `limit` takes a fixed, deterministic slice (the dev / CI-gate cut) — ordered by creation then
+    id so the same N personas are chosen every run.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT id FROM profiles WHERE user_id = :uid AND type = :type "
+            "ORDER BY created_at, id LIMIT :limit"
+        ),
+        {"uid": user_id, "type": profile_type, "limit": limit},
+    )
+    return [row[0] for row in result]
+
+
 async def ensure_profile(
     conn: AsyncConnection, profile_id: UUID, *, profile_type: str, user_id: UUID
 ) -> None:
