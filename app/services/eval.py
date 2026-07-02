@@ -1,14 +1,16 @@
-"""Eval service (M2.2) — benchmark the attack engine on the seeded SynthPAI profiles (Job 1).
+"""Eval service (M2.2/M2.3) — benchmark the attack engine on the seeded SynthPAI profiles (Job 1).
 
 Runs the **same** engine (`infer_profile`) over each benchmark persona on a **privileged**
 connection (like the seed — `eval_labels` has no app-role grant, so a user request can never reach
 ground truth), persists each persona's consensus guesses as `inferences` under one `eval` run, and
 scores every prediction against the persona's labels with the shared match rules
-(`domain.eval_match`). Aggregates to per-attribute `eval_results` (top-1/top-3, by hardness). Only
-labels a comment actually reveals (certainty ≥ 1) count toward accuracy (benchmarking.md). No user
-data; content decrypted in memory, never logged.
+(`domain.eval_match`). Ambiguous occupation/geo cases escalate to the M2.3 match-judge; a `partial`
+or low-confidence verdict raises a human spot-check. Aggregates to per-attribute `eval_results`
+(top-1/top-3, by hardness). Only labels a comment actually reveals (certainty ≥ 1) count toward
+accuracy (benchmarking.md). No user data; content decrypted in memory, never logged.
 """
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -21,12 +23,11 @@ from app.domain.eval_match import (
     LabeledPrediction,
     MatchVerdict,
     ScoredAttribute,
-    match_prediction,
     score_predictions,
 )
 from app.domain.output_schema import AttributeGuess
 from app.gateway.client import Profiler
-from app.gateway.prompts import ENGINE_VERSION
+from app.gateway.prompts import ENGINE_VERSION, MATCH_JUDGE_VERSION
 from app.repositories import eval_labels as eval_labels_repo
 from app.repositories import eval_results as eval_results_repo
 from app.repositories import profiles as profiles_repo
@@ -37,19 +38,22 @@ from app.retrieval.pii import PiiDetector
 from app.services.benchmark import SYNTHPAI_USER_ID
 from app.services.geocoding import Geocoder
 from app.services.inference import infer_profile, persist_attribute_guess
+from app.services.match_judge import MatchJudge, SpotCheck, judge_match_prediction
 from app.services.occupation import OccupationJudge
 
+logger = logging.getLogger(__name__)
+
 _MODALITY = "text"
-_MISS = MatchVerdict(top1=False, top3=False)  # a revealed label the engine didn't infer at all
 
 
 @dataclass(frozen=True)
 class EvalRunResult:
-    """One benchmark pass: the eval run id, personas scored, and per-attribute accuracy."""
+    """One benchmark pass: the eval run id, personas scored, per-attribute accuracy, spot-checks."""
 
     run_id: uuid.UUID
     personas: int
     scores: list[ScoredAttribute]
+    spot_checks: list[SpotCheck]
 
 
 def _revealed(true_value: dict[str, Any]) -> tuple[object, int | None] | None:
@@ -60,12 +64,20 @@ def _revealed(true_value: dict[str, Any]) -> tuple[object, int | None] | None:
     return true_value.get("value"), (int(hardness) if hardness is not None else None)
 
 
-def _score_persona(
-    guesses: list[AttributeGuess], labels: list[eval_labels_repo.EvalLabelRow]
-) -> list[LabeledPrediction]:
-    """Match one persona's predictions against its revealed labels (a miss if not predicted)."""
+async def _score_persona(
+    guesses: list[AttributeGuess],
+    labels: list[eval_labels_repo.EvalLabelRow],
+    *,
+    match_judge: MatchJudge | None,
+) -> tuple[list[LabeledPrediction], list[SpotCheck]]:
+    """Match one persona's predictions against its revealed labels (a miss if not predicted).
+
+    Ambiguous occupation/geo misses escalate to the match-judge; the top-1 verdict may raise a
+    spot-check. A revealed label the engine never guessed is a miss (never sent to the judge).
+    """
     by_attribute = {guess.attribute: guess for guess in guesses}
     scored: list[LabeledPrediction] = []
+    spot_checks: list[SpotCheck] = []
     for label in labels:
         attribute = label.attribute_code
         if attribute not in BY_CODE:
@@ -75,9 +87,15 @@ def _score_persona(
             continue
         value, hardness = revealed
         guess = by_attribute.get(attribute)
-        verdict = match_prediction(attribute, guess, value) if guess is not None else _MISS
+        if guess is None:
+            verdict = MatchVerdict(top1=False, top3=False)  # revealed but never inferred → miss
+        else:
+            judged = await judge_match_prediction(attribute, guess, value, judge=match_judge)
+            verdict = judged.verdict
+            if judged.spot_check is not None:
+                spot_checks.append(judged.spot_check)
         scored.append(LabeledPrediction(attribute=attribute, verdict=verdict, hardness=hardness))
-    return scored
+    return scored, spot_checks
 
 
 async def run_eval(
@@ -89,6 +107,7 @@ async def run_eval(
     *,
     master_key: str,
     judge: OccupationJudge | None = None,
+    match_judge: MatchJudge | None = None,
     limit: int | None = None,
     n_runs: int | None = None,
     temperature: float | None = None,
@@ -97,8 +116,13 @@ async def run_eval(
 
     The eval run is anchored to a benchmark-session profile (owns no items); each persona's
     predictions persist as `inferences` under it (tagged with the persona's own profile_id), and
-    `eval_results` hangs off the run. Privileged connection.
+    `eval_results` hangs off the run. When a `match_judge` is given, ambiguous occupation/geo cases
+    are LLM-judged and the scoring version pins the judge (judge↔calibration coupling). Privileged
+    connection.
     """
+    scoring_version = (
+        ENGINE_VERSION if match_judge is None else f"{ENGINE_VERSION}+{MATCH_JUDGE_VERSION}"
+    )
     session_profile_id = await profiles_repo.get_or_create_self_profile(conn, SYNTHPAI_USER_ID)
     run_id = await runs_repo.insert_run_v2(
         conn, session_profile_id, run_type="eval", status="running", engine_version=ENGINE_VERSION
@@ -108,6 +132,7 @@ async def run_eval(
     )
     started = time.monotonic()
     scored: list[LabeledPrediction] = []
+    spot_checks: list[SpotCheck] = []
     model_calls = 0
     for persona_id in persona_ids:
         inference = await infer_profile(
@@ -135,7 +160,11 @@ async def run_eval(
                 master_key=master_key,
             )
         labels = await eval_labels_repo.list_labels_for_profile(conn, persona_id)
-        scored.extend(_score_persona(inference.guesses, labels))
+        persona_scored, persona_spots = await _score_persona(
+            inference.guesses, labels, match_judge=match_judge
+        )
+        scored.extend(persona_scored)
+        spot_checks.extend(persona_spots)
 
     scores = score_predictions(scored)
     for score in scores:
@@ -147,7 +176,7 @@ async def run_eval(
             top1_acc=score.top1_acc,
             top3_acc=score.top3_acc,
             by_hardness=score.by_hardness,
-            engine_version=ENGINE_VERSION,
+            engine_version=scoring_version,
         )
     latency_ms = int((time.monotonic() - started) * 1000)
     await run_metrics_repo.insert_run_metrics(
@@ -156,4 +185,12 @@ async def run_eval(
     await runs_repo.set_run_status_where(
         conn, run_id, "succeeded", allowed_from=("running",), finished=True
     )
-    return EvalRunResult(run_id=run_id, personas=len(persona_ids), scores=scores)
+    logger.info(
+        "eval run %s: %d personas, %d spot-checks flagged",
+        run_id,
+        len(persona_ids),
+        len(spot_checks),
+    )
+    return EvalRunResult(
+        run_id=run_id, personas=len(persona_ids), scores=scores, spot_checks=spot_checks
+    )

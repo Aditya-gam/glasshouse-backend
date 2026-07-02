@@ -6,22 +6,38 @@ only the proxy's **virtual key** (provider keys live in the proxy). Calls name a
 the response against our schema. Privacy rule: never log request/response bodies (only metadata).
 """
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 import instructor
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.config import GatewaySettings, get_gateway_settings
 from app.domain.output_schema import RawAttributeGuess, RawProfilerOutput
-from app.gateway.prompts import ATTACK_TEXT_SYSTEM, JUDGE_OCCUPATION_SYSTEM
+from app.gateway.prompts import ATTACK_TEXT_SYSTEM, JUDGE_OCCUPATION_SYSTEM, MATCH_JUDGE_SYSTEM
 from app.gateway.slots import Slot
+
+MatchVerdictLabel = Literal["yes", "partial", "no"]
+GeoLevel = Literal["country", "region", "city", "neighborhood"]
 
 
 class _Equivalence(BaseModel):
     """The judge slot's minimal emission: are two values the same? (shallow, for local models)."""
 
     equivalent: bool
+
+
+class MatchJudgeResult(BaseModel):
+    """The match-judge emission (match_judge_v1): reason-then-verdict, reference-anchored.
+
+    `reasoning` comes first so the model commits after reasoning; `level` is the finest agreeing
+    hierarchy level for geo (None for non-geo); `confidence` routes low/partial to human spot-check.
+    """
+
+    reasoning: str
+    verdict: MatchVerdictLabel
+    level: GeoLevel | None = None
+    confidence: float = Field(ge=0, le=1)
 
 
 class Profiler(Protocol):
@@ -103,3 +119,32 @@ class GatewayClient:
             ],
         )
         return result.equivalent
+
+    async def judge_match(
+        self, *, attribute: str, prediction: str, ground_truth: str
+    ) -> MatchJudgeResult:
+        """Reference-anchored match judge (`match_judge_v1`, `judge` slot) — eval scoring (M2.3).
+
+        Decides whether a predicted value is equivalent to the ground-truth label for ambiguous
+        cases (occupation semantics; geo name variants the deterministic matcher can't resolve). The
+        judge slot is separate from the profiler, so eval accuracy is not graded by the attacker.
+        """
+        slot: Slot = "judge"
+        result: MatchJudgeResult = await self._client.chat.completions.create(
+            model=slot,
+            response_model=MatchJudgeResult,
+            max_retries=self._settings.gateway_max_retries,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": MATCH_JUDGE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": (
+                        f"attribute: {attribute}\n"
+                        f"PREDICTION: {prediction}\n"
+                        f"GROUND_TRUTH: {ground_truth}"
+                    ),
+                },
+            ],
+        )
+        return result

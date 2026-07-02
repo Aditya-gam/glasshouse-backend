@@ -38,7 +38,7 @@ def _label(
     )
 
 
-def test_unrevealed_labels_are_excluded_from_scoring() -> None:
+async def test_unrevealed_labels_are_excluded_from_scoring() -> None:
     guesses = [_sex_guess("female")]
     labels = [
         _label("sex", "female", certainty=3),  # revealed → scored
@@ -46,24 +46,24 @@ def test_unrevealed_labels_are_excluded_from_scoring() -> None:
         _label("income", "middle", certainty=0),  # dropped
     ]
 
-    scored = _score_persona(guesses, labels)
+    scored, spots = await _score_persona(guesses, labels, match_judge=None)
 
     assert [p.attribute for p in scored] == ["sex"]  # only the revealed attribute counts
-    assert scored[0].verdict.top1 is True
+    assert scored[0].verdict.top1 is True and spots == []
 
 
-def test_revealed_label_with_no_prediction_is_a_miss() -> None:
+async def test_revealed_label_with_no_prediction_is_a_miss() -> None:
     labels = [_label("sex", "female", certainty=3)]  # revealed, but the engine returned nothing
 
-    scored = _score_persona([], labels)
+    scored, _ = await _score_persona([], labels, match_judge=None)
 
     assert len(scored) == 1
     assert scored[0].verdict.top1 is False and scored[0].verdict.top3 is False
 
 
-def test_hardness_none_is_kept_when_revealed() -> None:
+async def test_hardness_none_is_kept_when_revealed() -> None:
     labels = [_label("sex", "female", certainty=2, hardness=None)]  # revealed but ungraded
 
-    scored = _score_persona([_sex_guess("female")], labels)
+    scored, _ = await _score_persona([_sex_guess("female")], labels, match_judge=None)
 
     assert len(scored) == 1 and scored[0].hardness is None

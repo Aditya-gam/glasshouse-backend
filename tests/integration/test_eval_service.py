@@ -22,6 +22,8 @@ from alembic import command
 from app.core.config import get_database_settings
 from app.db.rls import set_rls_context
 from app.domain.output_schema import RawAttributeGuess, RawCandidate
+from app.gateway.client import MatchJudgeResult, MatchVerdictLabel
+from app.gateway.prompts import ENGINE_VERSION
 from app.ingestion.sources.synthpai import parse_synthpai_rows
 from app.retrieval.embedder import EMBEDDING_DIM
 from app.services.benchmark import seed_synthpai, synthpai_profile_id
@@ -69,6 +71,34 @@ class _FixedGateway:
                 candidates=[RawCandidate(value_text="99", self_confidence=0.9)],
             ),
         ]
+
+
+class _OccupationGateway:
+    """Predicts an occupation paraphrase of the label ("lab technician") — a deterministic miss."""
+
+    async def profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
+        return [
+            RawAttributeGuess(
+                attribute="occupation",
+                status="inferred",
+                candidates=[RawCandidate(value_text="laboratory technician", self_confidence=0.9)],
+            )
+        ]
+
+
+class _FakeMatchJudge:
+    """A judge that returns a fixed verdict for every ambiguous case (records the calls)."""
+
+    def __init__(self, verdict: MatchVerdictLabel = "yes", confidence: float = 0.95) -> None:
+        self._verdict = verdict
+        self._confidence = confidence
+        self.calls = 0
+
+    async def judge(self, attribute: Any, prediction: str, ground_truth: str) -> MatchJudgeResult:
+        self.calls += 1
+        return MatchJudgeResult(reasoning="", verdict=self._verdict, confidence=self._confidence)
 
 
 def _profile(**overrides: Any) -> dict[str, Any]:
@@ -136,19 +166,26 @@ async def app_engine(eval_container: PostgresContainer) -> AsyncIterator[AsyncEn
     await engine.dispose()
 
 
-async def _seed_and_eval(owner_engine: AsyncEngine, *, limit: int | None = None) -> Any:
+async def _seed_and_eval(
+    owner_engine: AsyncEngine,
+    *,
+    limit: int | None = None,
+    gateway: Any = None,
+    match_judge: Any = None,
+) -> Any:
     personas = parse_synthpai_rows(_ROWS)
     async with owner_engine.connect() as conn, conn.begin():
         await seed_synthpai(conn, _FakeEmbedder(), personas, master_key=_MASTER_KEY)
     async with owner_engine.connect() as conn, conn.begin():
         return await run_eval(
             conn,
-            _FixedGateway(),
+            gateway or _FixedGateway(),
             _FakeEmbedder(),
             _FakeDetector(),
             _FakeGeocoder(),
             master_key=_MASTER_KEY,
             judge=StringMatchJudge(),
+            match_judge=match_judge,
             limit=limit,
             n_runs=2,
             temperature=0.0,
@@ -168,13 +205,16 @@ async def test_eval_writes_one_run_and_per_attribute_results(owner_engine: Async
         rows = (
             await conn.execute(
                 text(
-                    "SELECT attribute_code, top1_acc, top3_acc FROM eval_results "
+                    "SELECT attribute_code, top1_acc, top3_acc, engine_version FROM eval_results "
                     "WHERE run_id = :r ORDER BY attribute_code"
                 ),
                 {"r": result.run_id},
             )
         ).all()
     assert run_type == "eval" and run_status == "succeeded"
+    # no match-judge → the scoring version pins the bare attack engine, no judge suffix
+    # (the calibration coupling: only a judge-graded run carries "+match_judge_v1@judge").
+    assert all(row[3] == ENGINE_VERSION for row in rows)
     by_attr = {row[0]: (float(row[1]), float(row[2])) for row in rows}
     # only the 4 revealed attributes are scored; birthplace/education/income/relationship are
     # labeled but unrevealed (certainty 0) → excluded from the denominator entirely.
@@ -242,3 +282,31 @@ async def test_eval_results_invisible_to_normal_users(
         # eval_results / eval_labels have no app-role grant → not selectable at all.
         with pytest.raises(Exception, match="permission denied"):
             await conn.execute(text("SELECT count(*) FROM eval_results"))
+
+
+async def test_match_judge_upgrades_occupation_and_flags_spot_checks(
+    owner_engine: AsyncEngine,
+) -> None:
+    # occupation "laboratory technician" is a deterministic string-miss vs the label "lab
+    # technician"; the judge (yes, low confidence) upgrades it to a hit and flags a spot-check.
+    judge = _FakeMatchJudge(verdict="yes", confidence=0.5)
+
+    result = await _seed_and_eval(owner_engine, gateway=_OccupationGateway(), match_judge=judge)
+
+    async with owner_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT top1_acc, engine_version FROM eval_results "
+                    "WHERE run_id = :r AND attribute_code = 'occupation'"
+                ),
+                {"r": result.run_id},
+            )
+        ).one()
+    top1_acc, engine_version = rows
+    assert float(top1_acc) == 1.0  # both personas upgraded from string-miss to judged hit
+    assert engine_version.endswith("+match_judge_v1@judge")  # scoring pins the judge (calibration)
+    assert judge.calls == 2  # one ambiguous occupation per persona
+    # low-confidence "yes" → both raised a spot-check.
+    assert len(result.spot_checks) == 2
+    assert all(s.attribute == "occupation" for s in result.spot_checks)
