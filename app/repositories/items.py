@@ -35,8 +35,10 @@ async def insert_canonical_item(
     """Insert one encrypted + embedded item; return its id, or None if it was a duplicate.
 
     Text is encrypted in-query (`encrypt_field`, DEK never leaves Postgres); the dedupe key is a
-    keyed HMAC and the embedding binds as a pgvector literal. ON CONFLICT on (owner_user_id,
-    content_hmac) makes re-imports idempotent (a repeat returns ``None``). Caller sets RLS first.
+    keyed HMAC over (profile, text) — re-importing the same content into the same profile is
+    idempotent (a repeat returns ``None``), while the same text under two profiles (distinct
+    benchmark personas) stays two items. The embedding binds as a pgvector literal. Caller sets
+    RLS first.
     """
     result = await conn.execute(
         text(
@@ -44,7 +46,7 @@ async def insert_canonical_item(
             "content_hmac, embedding, posted_at, original_tz, is_subject_authored) "
             "VALUES (:profile_id, :owner, :import_source_id, "
             "encrypt_field(:owner, :plaintext, :mk), "
-            "encode(hmac(:plaintext, :mk, 'sha256'), 'hex'), "
+            "encode(hmac(:dedupe_key, :mk, 'sha256'), 'hex'), "
             "CAST(:embedding AS vector), :posted_at, :original_tz, :is_authored) "
             "ON CONFLICT (owner_user_id, content_hmac) DO NOTHING "
             "RETURNING id"
@@ -54,6 +56,7 @@ async def insert_canonical_item(
             "owner": owner_user_id,
             "import_source_id": import_source_id,
             "plaintext": plaintext,
+            "dedupe_key": f"{profile_id}:{plaintext}",
             "mk": master_key,
             "embedding": _to_pgvector(embedding),
             "posted_at": posted_at,
@@ -79,33 +82,41 @@ class RetrievedItem:
     text: str
 
 
-async def list_items_with_text(conn: AsyncConnection, master_key: str) -> list[RetrievedItem]:
-    """All of the current user's items (id + decrypted text), RLS-scoped. Recall-first source."""
+async def list_items_with_text(
+    conn: AsyncConnection, profile_id: UUID, master_key: str
+) -> list[RetrievedItem]:
+    """The profile's items (id + decrypted text), RLS-scoped on top. Recall-first source."""
     result = await conn.execute(
-        text("SELECT id, decrypt_field(owner_user_id, text_ct, :mk) FROM items"),
-        {"mk": master_key},
+        text(
+            "SELECT id, decrypt_field(owner_user_id, text_ct, :mk) FROM items "
+            "WHERE profile_id = :profile_id"
+        ),
+        {"mk": master_key, "profile_id": profile_id},
     )
     return [RetrievedItem(id=row[0], text=row[1]) for row in result]
 
 
 async def search_item_ids_by_embedding(
-    conn: AsyncConnection, query_embedding: list[float], k: int
+    conn: AsyncConnection, profile_id: UUID, query_embedding: list[float], k: int
 ) -> list[UUID]:
-    """The k item ids most similar to the query vector (pgvector cosine via HNSW), RLS-scoped."""
+    """The profile's k item ids most similar to the query vector (pgvector cosine via HNSW)."""
     result = await conn.execute(
         text(
-            "SELECT id FROM items WHERE embedding IS NOT NULL "
+            "SELECT id FROM items WHERE profile_id = :profile_id AND embedding IS NOT NULL "
             "ORDER BY embedding <=> CAST(:q AS vector) LIMIT :k"
         ),
-        {"q": _to_pgvector(query_embedding), "k": k},
+        {"profile_id": profile_id, "q": _to_pgvector(query_embedding), "k": k},
     )
     return [row[0] for row in result]
 
 
-async def recent_item_ids(conn: AsyncConnection, n: int) -> list[UUID]:
-    """The n most recent item ids (by post time, falling back to ingest time), RLS-scoped."""
+async def recent_item_ids(conn: AsyncConnection, profile_id: UUID, n: int) -> list[UUID]:
+    """The profile's n most recent item ids (by post time, falling back to ingest time)."""
     result = await conn.execute(
-        text("SELECT id FROM items ORDER BY COALESCE(posted_at, created_at) DESC LIMIT :n"),
-        {"n": n},
+        text(
+            "SELECT id FROM items WHERE profile_id = :profile_id "
+            "ORDER BY COALESCE(posted_at, created_at) DESC LIMIT :n"
+        ),
+        {"profile_id": profile_id, "n": n},
     )
     return [row[0] for row in result]

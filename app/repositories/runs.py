@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -12,11 +13,24 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 @dataclass(frozen=True)
 class RunRow:
     id: UUID
+    profile_id: UUID
     type: str
     status: str
     engine_version: str | None
     created_at: datetime
     finished_at: datetime | None
+
+
+def _to_run_row(row: Any) -> RunRow:
+    return RunRow(
+        id=row[0],
+        profile_id=row[1],
+        type=row[2],
+        status=row[3],
+        engine_version=row[4],
+        created_at=row[5],
+        finished_at=row[6],
+    )
 
 
 async def insert_run_v2(
@@ -53,7 +67,7 @@ async def get_run_by_idempotency_key(conn: AsyncConnection, idempotency_key: str
     """
     result = await conn.execute(
         text(
-            "SELECT id, type, status, engine_version, created_at, finished_at "
+            "SELECT id, profile_id, type, status, engine_version, created_at, finished_at "
             "FROM runs WHERE idempotency_key = :idem"
         ),
         {"idem": idempotency_key},
@@ -61,14 +75,7 @@ async def get_run_by_idempotency_key(conn: AsyncConnection, idempotency_key: str
     row = result.first()
     if row is None:
         return None
-    return RunRow(
-        id=row[0],
-        type=row[1],
-        status=row[2],
-        engine_version=row[3],
-        created_at=row[4],
-        finished_at=row[5],
-    )
+    return _to_run_row(row)
 
 
 async def set_run_status_where(
@@ -101,7 +108,7 @@ async def get_run(conn: AsyncConnection, run_id: UUID) -> RunRow | None:
     """Return the run, or None if absent or RLS-hidden (another user's run)."""
     result = await conn.execute(
         text(
-            "SELECT id, type, status, engine_version, created_at, finished_at "
+            "SELECT id, profile_id, type, status, engine_version, created_at, finished_at "
             "FROM runs WHERE id = :id"
         ),
         {"id": run_id},
@@ -109,11 +116,4 @@ async def get_run(conn: AsyncConnection, run_id: UUID) -> RunRow | None:
     row = result.first()
     if row is None:
         return None
-    return RunRow(
-        id=row[0],
-        type=row[1],
-        status=row[2],
-        engine_version=row[3],
-        created_at=row[4],
-        finished_at=row[5],
-    )
+    return _to_run_row(row)
