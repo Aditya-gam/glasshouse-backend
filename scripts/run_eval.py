@@ -24,6 +24,7 @@ from app.retrieval.embedder import default_embedder
 from app.retrieval.pii import default_pii_detector
 from app.services.eval import run_eval
 from app.services.geocoding import default_geocoder
+from app.services.match_judge import GatewayMatchJudge
 from app.services.occupation import GatewayOccupationJudge
 
 
@@ -40,6 +41,7 @@ async def _run(limit: int | None) -> None:
                 default_geocoder(),
                 master_key=get_master_key(),
                 judge=GatewayOccupationJudge(gateway),
+                match_judge=GatewayMatchJudge(gateway),
                 limit=limit,
             )
     finally:
@@ -50,6 +52,7 @@ async def _run(limit: int | None) -> None:
             f"  {score.attribute:<12} top1={score.top1_acc:.3f} "
             f"top3={score.top3_acc:.3f} (n={score.n})"
         )
+    print(f"{len(result.spot_checks)} verdict(s) flagged for human spot-check")
 
 
 def main() -> None:

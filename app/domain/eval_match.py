@@ -24,6 +24,7 @@ from app.domain.output_schema import (
     AttributeCode,
     AttributeGuess,
     AttributeValue,
+    CategoricalValue,
     FreeTextValue,
     GeoHierValue,
     NumericValue,
@@ -124,19 +125,49 @@ def _value_matches(
     return values_agree(attribute, value, normalized), None
 
 
-def match_prediction(
+def candidate_hits(
     attribute: AttributeCode, prediction: AttributeGuess, label_value: object
-) -> MatchVerdict:
-    """Score one attribute prediction against its ground-truth label (top-1 + top-3)."""
+) -> list[tuple[bool, str | None]]:
+    """Per-candidate deterministic (hit, geo-level) for the up-to-3 ranked candidates.
+
+    The match-judge (M2.3, service layer) escalates only the candidates that deterministically
+    miss on an ambiguous attribute — so it never re-judges a case exact/band/GeoNames resolved.
+    """
     if prediction.status != "inferred" or not prediction.candidates:
+        return []
+    return [_value_matches(attribute, c.value, label_value) for c in prediction.candidates[:3]]
+
+
+def verdict_from_hits(
+    attribute: AttributeCode, hits: list[tuple[bool, str | None]]
+) -> MatchVerdict:
+    """Collapse per-candidate hits into a top-1/top-3 verdict (level is geo-only, from top-1)."""
+    if not hits:
         return MatchVerdict(top1=False, top3=False)
-    hits = [_value_matches(attribute, c.value, label_value) for c in prediction.candidates[:3]]
     top1_hit, top1_level = hits[0]
     return MatchVerdict(
         top1=top1_hit,
         top3=any(hit for hit, _ in hits),
         level=top1_level if BY_CODE[attribute].value_type == "geo_hier" else None,
     )
+
+
+def match_prediction(
+    attribute: AttributeCode, prediction: AttributeGuess, label_value: object
+) -> MatchVerdict:
+    """Score one attribute prediction against its ground-truth label (top-1 + top-3)."""
+    return verdict_from_hits(attribute, candidate_hits(attribute, prediction, label_value))
+
+
+def render_value(attribute: AttributeCode, value: AttributeValue) -> str:
+    """A canonical value as a human string for the match-judge (occupation text; geo hierarchy)."""
+    if isinstance(value, FreeTextValue):
+        return value.text
+    if isinstance(value, GeoHierValue):
+        return ", ".join(part for part in (value.city, value.region, value.country) if part)
+    if isinstance(value, CategoricalValue):
+        return value.value
+    return str(int(value.estimate))
 
 
 # --- scoring (aggregate verdicts → per-attribute accuracy) -----------------------------------
