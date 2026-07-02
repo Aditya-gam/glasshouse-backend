@@ -126,8 +126,14 @@ async def execute_attack_run(
     if not await runs_repo.set_run_status_where(conn, run_id, "running", allowed_from=("queued",)):
         return  # not claimable (canceled before pickup, or already running) — do nothing
     started = time.monotonic()
-    profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
-    evidence = await retrieve_evidence(conn, embedder, pii_detector, master_key=master_key)
+    run = await runs_repo.get_run(conn, run_id)
+    if run is None:  # claimed above, so only RLS mid-flight revocation can land here
+        return
+    # the run's own profile — not the self profile — so eval runs on benchmark profiles work too.
+    profile_id = run.profile_id
+    evidence = await retrieve_evidence(
+        conn, embedder, pii_detector, profile_id=profile_id, master_key=master_key
+    )
     valid_item_ids = {item.id for item in evidence}
     content = build_user_prompt([(str(item.id), item.text) for item in evidence])
 

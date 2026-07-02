@@ -47,13 +47,18 @@ async def retrieve_evidence(
     embedder: Embedder,
     pii_detector: PiiDetector,
     *,
+    profile_id: UUID,
     master_key: str,
     config: RetrievalConfig | None = None,
     token_counter: TokenCounter = count_tokens,
 ) -> list[RetrievedItem]:
-    """Select one subject's evidence set, RLS-scoped (the Profiler reads exactly this)."""
+    """Select one profile's evidence set, RLS-scoped (the Profiler reads exactly this).
+
+    Scoped to the run's profile, not the whole owner — a user (or the benchmark user at M2) can
+    hold several profiles, and evidence must never blend across them.
+    """
     config = config or RetrievalConfig()
-    all_items = await items_repo.list_items_with_text(conn, master_key)
+    all_items = await items_repo.list_items_with_text(conn, profile_id, master_key)
     text_by_id = {item.id: item.text for item in all_items}
 
     # 1. embedding-relevance — one query per attribute, top-k each (pgvector / HNSW).
@@ -62,11 +67,11 @@ async def retrieve_evidence(
         query_vector = embedder.embed([query])[0]
         relevant.extend(
             await items_repo.search_item_ids_by_embedding(
-                conn, query_vector, config.per_attribute_k
+                conn, profile_id, query_vector, config.per_attribute_k
             )
         )
     # 2. recency.
-    recent = await items_repo.recent_item_ids(conn, config.recency_n)
+    recent = await items_repo.recent_item_ids(conn, profile_id, config.recency_n)
     # 3. always-include — explicit-PII items must never be ranked out.
     mandatory = {item.id for item in all_items if pii_detector.has_identifying_signal(item.text)}
 
