@@ -41,3 +41,12 @@ async def provision_user_dek(conn: AsyncConnection, user_id: UUID, master_key: s
         text("SELECT provision_user_dek(:uid, :mk)"),
         {"uid": user_id, "mk": master_key},
     )
+
+
+async def has_user_dek(conn: AsyncConnection, user_id: UUID) -> bool:
+    """Whether the user's wrapped DEK exists. Privileged — the app role can't read `data_keys`."""
+    result = await conn.execute(
+        text("SELECT 1 FROM data_keys WHERE user_id = :uid"),
+        {"uid": user_id},
+    )
+    return result.first() is not None

@@ -104,19 +104,29 @@ async def persist_items(
     items: list[CanonicalTextItem],
     method: Method,
     master_key: str,
+    profile_id: UUID | None = None,
+    import_source_id: UUID | None = None,
 ) -> PersistResult:
     """Embed + encrypt + dedupe-persist the subject's canonical items (M1.3), RLS-scoped to owner.
 
-    Assumes the third-party drop already ran (`run_ingestion`). Creates the `self` profile + one
-    `import_source` for provenance, then inserts each item; re-imports of the same content are
-    skipped (keyed-HMAC dedupe). No content is logged.
+    Assumes the third-party drop already ran (`run_ingestion`). Items land on `profile_id` when
+    given (the benchmark seed's per-persona profiles) or the owner's `self` profile. Provenance:
+    a fresh `import_source` per call (one row per import event), unless the caller passes a
+    deterministic `import_source_id` (the idempotent benchmark seed). Re-imports of the same
+    content into the same profile are skipped (keyed-HMAC dedupe). No content is logged.
     """
     if not items:
         return PersistResult(import_source_id=None, inserted=0, deduped=0)
-    profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
-    import_source_id = await import_sources_repo.create_import_source(
-        conn, profile_id, platform=items[0].platform, method=method
-    )
+    if profile_id is None:
+        profile_id = await profiles_repo.get_or_create_self_profile(conn, owner_user_id)
+    if import_source_id is None:
+        import_source_id = await import_sources_repo.create_import_source(
+            conn, profile_id, platform=items[0].platform, method=method
+        )
+    else:
+        await import_sources_repo.ensure_import_source(
+            conn, import_source_id, profile_id, platform=items[0].platform, method=method
+        )
     vectors = embedder.embed([item.text for item in items])
     inserted = 0
     for item, vector in zip(items, vectors, strict=True):
@@ -146,6 +156,8 @@ async def ingest_and_persist(
     *,
     owner_user_id: UUID,
     master_key: str,
+    profile_id: UUID | None = None,
+    import_source_id: UUID | None = None,
 ) -> PersistResult:
     """Full ingestion (M1.1–M1.3): parse → normalize → drop → embed + encrypt + dedupe-persist."""
     items = run_ingestion(adapter)
@@ -156,4 +168,6 @@ async def ingest_and_persist(
         items=items,
         method=adapter.method,
         master_key=master_key,
+        profile_id=profile_id,
+        import_source_id=import_source_id,
     )

@@ -36,3 +36,14 @@ async def delete_user_by_clerk_id(conn: AsyncConnection, clerk_user_id: str) -> 
         text("DELETE FROM users WHERE clerk_user_id = :cid"),
         {"cid": clerk_user_id},
     )
+
+
+async def ensure_user(conn: AsyncConnection, user_id: UUID) -> None:
+    """Create a user with a caller-chosen (deterministic) id; a no-op if it exists.
+
+    Used by the benchmark seed for the synthetic-data owner (no Clerk identity).
+    """
+    await conn.execute(
+        text("INSERT INTO users (id) VALUES (:id) ON CONFLICT (id) DO NOTHING"),
+        {"id": user_id},
+    )

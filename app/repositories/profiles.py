@@ -26,3 +26,20 @@ async def get_or_create_self_profile(conn: AsyncConnection, owner_user_id: UUID)
     )
     created: UUID = result.scalar_one()
     return created
+
+
+async def ensure_profile(
+    conn: AsyncConnection, profile_id: UUID, *, profile_type: str, user_id: UUID
+) -> None:
+    """Create a profile with a caller-chosen (deterministic) id; a no-op if it exists.
+
+    The benchmark seed derives stable per-persona ids (uuid5) so re-seeding maps each persona to
+    the same profile row.
+    """
+    await conn.execute(
+        text(
+            "INSERT INTO profiles (id, type, user_id) VALUES (:id, :type, :uid) "
+            "ON CONFLICT (id) DO NOTHING"
+        ),
+        {"id": profile_id, "type": profile_type, "uid": user_id},
+    )
