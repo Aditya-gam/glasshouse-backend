@@ -308,6 +308,15 @@ class RunMetric(_UuidPk, _Timestamped, Base):
 # --------------------------------------------------------------- measure --
 class EvalLabel(_UuidPk, Base):
     __tablename__ = "eval_labels"
+    # One label per (profile, attribute, modality) — the seed upserts on this (migration 0006).
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "attribute_code",
+            "modality",
+            name="uq_eval_labels_profile_attr_modality",
+        ),
+    )
 
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
     attribute_code: Mapped[str] = mapped_column(ForeignKey("attributes.code"))

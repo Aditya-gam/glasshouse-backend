@@ -23,3 +23,25 @@ async def create_import_source(
     )
     import_source_id: UUID = result.scalar_one()
     return import_source_id
+
+
+async def ensure_import_source(
+    conn: AsyncConnection,
+    source_id: UUID,
+    profile_id: UUID,
+    *,
+    platform: str,
+    method: str,
+) -> None:
+    """Create an import source with a caller-chosen (deterministic) id; a no-op if it exists.
+
+    The benchmark seed reuses one loader source per persona profile, so re-seeding doesn't grow
+    provenance rows. Real user imports keep `create_import_source` (one row per import event).
+    """
+    await conn.execute(
+        text(
+            "INSERT INTO import_sources (id, profile_id, platform, method) "
+            "VALUES (:id, :profile_id, :platform, :method) ON CONFLICT (id) DO NOTHING"
+        ),
+        {"id": source_id, "profile_id": profile_id, "platform": platform, "method": method},
+    )
