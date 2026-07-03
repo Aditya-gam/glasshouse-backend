@@ -227,6 +227,51 @@ async def test_eval_writes_one_run_and_per_attribute_results(owner_engine: Async
     assert by_attr["sex"] == (0.0, 0.0)
 
 
+async def test_eval_writes_calibration_map_pinned_to_the_scoring_version(
+    owner_engine: AsyncEngine,
+) -> None:
+    # both personas predict location "Lyon, France" correctly at raw 1.0 (2-run agreement) → the
+    # [0.9,1.0] location bucket calibrates to empirical 1.0; age (99) is wrong → 0.0.
+    await _seed_and_eval(owner_engine)
+
+    async with owner_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT attribute_code, confidence_bucket, empirical_accuracy, signal, n, "
+                    "modality, engine_version, noise_std FROM calibration "
+                    "WHERE engine_version = :ev ORDER BY attribute_code, confidence_bucket"
+                ),
+                {"ev": ENGINE_VERSION},  # no judge → pinned to the bare attack engine
+            )
+        ).all()
+    by_attr = {row[0]: row for row in rows}
+    assert "location" in by_attr and "age" in by_attr
+    location = by_attr["location"]
+    assert float(location[1]) == 0.9 and float(location[2]) == 1.0  # bucket [0.9,1.0] → 1.0
+    assert location[3] == "self_consistency" and location[4] == 2  # signal + N
+    assert location[5] == "text" and location[6] == ENGINE_VERSION
+    assert location[7] is None  # noise_std deferred (M2.4 ships map + ECE only)
+    assert float(by_attr["age"][2]) == 0.0  # wrong age guess calibrates to 0
+
+
+async def test_reseeding_upserts_calibration_in_place(owner_engine: AsyncEngine) -> None:
+    await _seed_and_eval(owner_engine)
+    await _seed_and_eval(owner_engine)  # a second pass at the same engine version
+
+    async with owner_engine.connect() as conn:
+        count = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM calibration "
+                    "WHERE engine_version = :ev AND attribute_code = 'location'"
+                ),
+                {"ev": ENGINE_VERSION},
+            )
+        ).scalar_one()
+    assert count == 1  # one bucket per (engine, attr, modality, signal, n) — upserted, not doubled
+
+
 async def test_eval_persists_per_persona_inferences_under_run(owner_engine: AsyncEngine) -> None:
     result = await _seed_and_eval(owner_engine)
 
