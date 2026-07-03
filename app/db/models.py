@@ -338,6 +338,18 @@ class EvalResult(_UuidPk, Base):
 
 class Calibration(_UuidPk, Base):
     __tablename__ = "calibration"
+    # The map's lookup key + the eval upsert's conflict target (migration 0007).
+    __table_args__ = (
+        UniqueConstraint(
+            "engine_version",
+            "attribute_code",
+            "modality",
+            "signal",
+            "n",
+            "confidence_bucket",
+            name="uq_calibration_lookup",
+        ),
+    )
 
     engine_version: Mapped[str] = mapped_column(Text)
     attribute_code: Mapped[str] = mapped_column(ForeignKey("attributes.code"))

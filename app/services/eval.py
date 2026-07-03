@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.domain.attributes import BY_CODE
+from app.domain.calibration import CalibrationSample, build_calibration
 from app.domain.eval_match import (
     LabeledPrediction,
     MatchVerdict,
@@ -28,6 +29,7 @@ from app.domain.eval_match import (
 from app.domain.output_schema import AttributeGuess
 from app.gateway.client import Profiler
 from app.gateway.prompts import ENGINE_VERSION, MATCH_JUDGE_VERSION
+from app.repositories import calibration as calibration_repo
 from app.repositories import eval_labels as eval_labels_repo
 from app.repositories import eval_results as eval_results_repo
 from app.repositories import profiles as profiles_repo
@@ -64,20 +66,50 @@ def _revealed(true_value: dict[str, Any]) -> tuple[object, int | None] | None:
     return true_value.get("value"), (int(hardness) if hardness is not None else None)
 
 
+@dataclass(frozen=True)
+class _PersonaScore:
+    """One persona's scoring: verdicts (for accuracy), spot-checks, calibration samples."""
+
+    predictions: list[LabeledPrediction]
+    spot_checks: list[SpotCheck]
+    samples: list[CalibrationSample]
+
+
+def _calibration_sample(guess: AttributeGuess, correct: bool) -> CalibrationSample | None:
+    """A calibration sample from an inferred prediction's top-1 candidate (None if abstained).
+
+    The raw signal + N come off the candidate's confidence, so the map keys exactly to what M2.5
+    will look up. Abstained guesses (no candidate) are not calibrated — nothing is shown for them.
+    """
+    if not guess.candidates:
+        return None
+    confidence = guess.candidates[0].confidence
+    n = confidence.agreement.n_runs if confidence.agreement is not None else 1
+    return CalibrationSample(
+        attribute=guess.attribute,
+        signal=confidence.source,
+        n=n,
+        raw_confidence=confidence.raw,
+        correct=correct,
+    )
+
+
 async def _score_persona(
     guesses: list[AttributeGuess],
     labels: list[eval_labels_repo.EvalLabelRow],
     *,
     match_judge: MatchJudge | None,
-) -> tuple[list[LabeledPrediction], list[SpotCheck]]:
+) -> _PersonaScore:
     """Match one persona's predictions against its revealed labels (a miss if not predicted).
 
     Ambiguous occupation/geo misses escalate to the match-judge; the top-1 verdict may raise a
-    spot-check. A revealed label the engine never guessed is a miss (never sent to the judge).
+    spot-check. A revealed label the engine never guessed is a miss (never sent to the judge). Each
+    inferred top-1 prediction also yields a calibration sample (raw confidence + correctness).
     """
     by_attribute = {guess.attribute: guess for guess in guesses}
-    scored: list[LabeledPrediction] = []
+    predictions: list[LabeledPrediction] = []
     spot_checks: list[SpotCheck] = []
+    samples: list[CalibrationSample] = []
     for label in labels:
         attribute = label.attribute_code
         if attribute not in BY_CODE:
@@ -94,8 +126,13 @@ async def _score_persona(
             verdict = judged.verdict
             if judged.spot_check is not None:
                 spot_checks.append(judged.spot_check)
-        scored.append(LabeledPrediction(attribute=attribute, verdict=verdict, hardness=hardness))
-    return scored, spot_checks
+            sample = _calibration_sample(guess, verdict.top1)
+            if sample is not None:
+                samples.append(sample)
+        predictions.append(
+            LabeledPrediction(attribute=attribute, verdict=verdict, hardness=hardness)
+        )
+    return _PersonaScore(predictions=predictions, spot_checks=spot_checks, samples=samples)
 
 
 async def run_eval(
@@ -133,6 +170,7 @@ async def run_eval(
     started = time.monotonic()
     scored: list[LabeledPrediction] = []
     spot_checks: list[SpotCheck] = []
+    samples: list[CalibrationSample] = []
     model_calls = 0
     for persona_id in persona_ids:
         inference = await infer_profile(
@@ -160,11 +198,10 @@ async def run_eval(
                 master_key=master_key,
             )
         labels = await eval_labels_repo.list_labels_for_profile(conn, persona_id)
-        persona_scored, persona_spots = await _score_persona(
-            inference.guesses, labels, match_judge=match_judge
-        )
-        scored.extend(persona_scored)
-        spot_checks.extend(persona_spots)
+        persona = await _score_persona(inference.guesses, labels, match_judge=match_judge)
+        scored.extend(persona.predictions)
+        spot_checks.extend(persona.spot_checks)
+        samples.extend(persona.samples)
 
     scores = score_predictions(scored)
     for score in scores:
@@ -178,6 +215,19 @@ async def run_eval(
             by_hardness=score.by_hardness,
             engine_version=scoring_version,
         )
+    for curve in build_calibration(samples):  # the reliability map, pinned to the scoring version
+        for bucket in curve.buckets:
+            await calibration_repo.upsert_calibration_bucket(
+                conn,
+                engine_version=scoring_version,
+                attribute_code=curve.attribute,
+                modality=_MODALITY,
+                signal=curve.signal,
+                n=curve.n,
+                confidence_bucket=bucket.bucket,
+                empirical_accuracy=bucket.empirical_accuracy,
+                ece=curve.ece,
+            )
     latency_ms = int((time.monotonic() - started) * 1000)
     await run_metrics_repo.insert_run_metrics(
         conn, run_id=run_id, latency_ms=latency_ms, model_calls=model_calls

@@ -46,24 +46,37 @@ async def test_unrevealed_labels_are_excluded_from_scoring() -> None:
         _label("income", "middle", certainty=0),  # dropped
     ]
 
-    scored, spots = await _score_persona(guesses, labels, match_judge=None)
+    persona = await _score_persona(guesses, labels, match_judge=None)
 
-    assert [p.attribute for p in scored] == ["sex"]  # only the revealed attribute counts
-    assert scored[0].verdict.top1 is True and spots == []
+    assert [p.attribute for p in persona.predictions] == ["sex"]  # only revealed counts
+    assert persona.predictions[0].verdict.top1 is True and persona.spot_checks == []
 
 
 async def test_revealed_label_with_no_prediction_is_a_miss() -> None:
     labels = [_label("sex", "female", certainty=3)]  # revealed, but the engine returned nothing
 
-    scored, _ = await _score_persona([], labels, match_judge=None)
+    persona = await _score_persona([], labels, match_judge=None)
 
-    assert len(scored) == 1
-    assert scored[0].verdict.top1 is False and scored[0].verdict.top3 is False
+    assert len(persona.predictions) == 1
+    assert persona.predictions[0].verdict.top1 is False
+    assert persona.predictions[0].verdict.top3 is False
+    assert persona.samples == []  # a non-prediction is not calibrated
 
 
 async def test_hardness_none_is_kept_when_revealed() -> None:
     labels = [_label("sex", "female", certainty=2, hardness=None)]  # revealed but ungraded
 
-    scored, _ = await _score_persona([_sex_guess("female")], labels, match_judge=None)
+    persona = await _score_persona([_sex_guess("female")], labels, match_judge=None)
 
-    assert len(scored) == 1 and scored[0].hardness is None
+    assert len(persona.predictions) == 1 and persona.predictions[0].hardness is None
+
+
+async def test_inferred_prediction_yields_a_calibration_sample() -> None:
+    labels = [_label("sex", "female", certainty=3)]
+
+    persona = await _score_persona([_sex_guess("female")], labels, match_judge=None)
+
+    assert len(persona.samples) == 1
+    sample = persona.samples[0]
+    assert sample.attribute == "sex" and sample.correct is True
+    assert sample.raw_confidence == 0.9 and sample.signal == "self_consistency"
