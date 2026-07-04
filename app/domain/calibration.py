@@ -53,12 +53,14 @@ class CalibrationCurve:
     ece: float
 
 
-def _bucket_edge(raw_confidence: float) -> float:
+def bucket_edge(raw_confidence: float) -> float:
     """The lower edge of the bucket a raw confidence falls in; 1.0 lands in the top bucket.
 
-    The `+ 1e-9` is an epsilon-tolerant floor: `0.7 / 0.1` is `6.999999999999999` in IEEE-754, so a
-    plain `int()` would file a clean-tenth confidence (exactly the N-run agreement fractions like
-    7/10) one bucket too low. The epsilon (≫ the ~1e-15 float error, ≪ a bucket) corrects that.
+    The public seam per-user scoring (M2.5) uses to key its calibration lookup to the same bucket
+    the map was built with. The `+ 1e-9` is an epsilon-tolerant floor: `0.7 / 0.1` is
+    `6.999999999999999` in IEEE-754, so a plain `int()` would file a clean-tenth confidence (exactly
+    the N-run agreement fractions like 7/10) one bucket too low. The epsilon (≫ the ~1e-15 float
+    error, ≪ a bucket) corrects that.
     """
     clamped = min(max(raw_confidence, 0.0), 1.0)
     index = min(int(clamped / _BUCKET_WIDTH + 1e-9), _NUM_BUCKETS - 1)
@@ -88,7 +90,7 @@ def build_calibration(samples: Iterable[CalibrationSample]) -> list[CalibrationC
     for (attribute, signal, n), group in by_group.items():
         by_bucket: dict[float, list[CalibrationSample]] = defaultdict(list)
         for sample in group:
-            by_bucket[_bucket_edge(sample.raw_confidence)].append(sample)
+            by_bucket[bucket_edge(sample.raw_confidence)].append(sample)
         buckets = [_bucket(members, edge) for edge, members in sorted(by_bucket.items())]
         total = len(group)
         ece = sum(

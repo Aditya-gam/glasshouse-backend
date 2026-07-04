@@ -46,3 +46,42 @@ async def upsert_calibration_bucket(
             "ece": Decimal(str(ece)),
         },
     )
+
+
+async def get_calibrated_reliability(
+    conn: AsyncConnection,
+    *,
+    engine_version: str,
+    attribute_code: str,
+    modality: str,
+    signal: str,
+    n: int,
+    confidence_bucket: float,
+) -> Decimal | None:
+    """The calibrated reliability for one bucket, or None if the map has no matching row (M2.5).
+
+    A miss is meaningful: an inference whose (engine_version, …, bucket) is absent from the map has
+    no calibrated reliability, so per-user scoring fails closed (stores NULL) rather than surface a
+    raw number. The `engine_version` must be the inference's own (the attack engine), which is what
+    the map is keyed on (calibration.md: "must match the inference's").
+    """
+    result = await conn.execute(
+        text(
+            "SELECT empirical_accuracy FROM calibration "
+            "WHERE engine_version = :ev AND attribute_code = :attr AND modality = :modality "
+            "AND signal = :signal AND n = :n AND confidence_bucket = :bucket"
+        ),
+        {
+            "ev": engine_version,
+            "attr": attribute_code,
+            "modality": modality,
+            "signal": signal,
+            "n": n,
+            "bucket": Decimal(str(confidence_bucket)),
+        },
+    )
+    row = result.first()
+    if row is None:
+        return None
+    reliability: Decimal = row[0]
+    return reliability
