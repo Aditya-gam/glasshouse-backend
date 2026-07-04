@@ -1,6 +1,15 @@
-"""Unit (M2.4): the pure calibration builder — bucketing, empirical accuracy, ECE, keying."""
+"""Unit (M2.4/M2.5): the pure calibration builder + the public bucket_edge seam."""
 
-from app.domain.calibration import CalibrationSample, build_calibration
+from app.domain.calibration import CalibrationSample, bucket_edge, build_calibration
+
+
+def test_bucket_edge_maps_raw_to_the_lookup_bucket() -> None:
+    # per-user scoring (M2.5) keys its lookup with this — must match the map's own bucketing.
+    assert bucket_edge(0.0) == 0.0
+    assert bucket_edge(0.67) == 0.6
+    assert bucket_edge(0.7) == 0.7  # the epsilon floor: 0.7/0.1 is 6.999… in IEEE-754
+    assert bucket_edge(1.0) == 0.9  # 1.0 lands in the top bucket
+    assert bucket_edge(1.5) == 0.9 and bucket_edge(-0.2) == 0.0  # clamped
 
 
 def _sample(

@@ -227,11 +227,12 @@ async def test_eval_writes_one_run_and_per_attribute_results(owner_engine: Async
     assert by_attr["sex"] == (0.0, 0.0)
 
 
-async def test_eval_writes_calibration_map_pinned_to_the_scoring_version(
+async def test_eval_writes_calibration_map_pinned_to_the_attack_engine(
     owner_engine: AsyncEngine,
 ) -> None:
     # both personas predict location "Lyon, France" correctly at raw 1.0 (2-run agreement) → the
-    # [0.9,1.0] location bucket calibrates to empirical 1.0; age (99) is wrong → 0.0.
+    # [0.9,1.0] location bucket calibrates to empirical 1.0; age (99) is wrong → 0.0. The map is
+    # keyed by the bare attack ENGINE_VERSION so a user's inference can find it.
     await _seed_and_eval(owner_engine)
 
     async with owner_engine.connect() as conn:
@@ -339,7 +340,7 @@ async def test_match_judge_upgrades_occupation_and_flags_spot_checks(
     result = await _seed_and_eval(owner_engine, gateway=_OccupationGateway(), match_judge=judge)
 
     async with owner_engine.connect() as conn:
-        rows = (
+        top1_acc, results_version = (
             await conn.execute(
                 text(
                     "SELECT top1_acc, engine_version FROM eval_results "
@@ -348,9 +349,20 @@ async def test_match_judge_upgrades_occupation_and_flags_spot_checks(
                 {"r": result.run_id},
             )
         ).one()
-    top1_acc, engine_version = rows
+        calibration_versions = [
+            row[0]
+            for row in await conn.execute(
+                text(
+                    "SELECT DISTINCT engine_version FROM calibration "
+                    "WHERE attribute_code = 'occupation'"
+                )
+            )
+        ]
     assert float(top1_acc) == 1.0  # both personas upgraded from string-miss to judged hit
-    assert engine_version.endswith("+match_judge_v1@judge")  # scoring pins the judge (calibration)
+    # eval_results pins the judge (the accuracy provenance)...
+    assert results_version.endswith("+match_judge_v1@judge")
+    # ...but the calibration map keys to the BARE attack engine, so a user's inference finds it.
+    assert calibration_versions == [ENGINE_VERSION]
     assert judge.calls == 2  # one ambiguous occupation per persona
     # low-confidence "yes" → both raised a spot-check.
     assert len(result.spot_checks) == 2

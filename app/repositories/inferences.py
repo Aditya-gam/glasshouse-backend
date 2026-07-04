@@ -4,6 +4,7 @@ The canonical inference + its ranked candidates + evidence children, all RLS-sco
 and reasoning are encrypted at rest (`encrypt_field`, DEK never leaves Postgres).
 """
 
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -60,27 +61,34 @@ async def insert_candidate(
     owner_user_id: UUID,
     is_art9: bool,
     master_key: str,
+    calibrated_reliability: Decimal | None = None,
 ) -> UUID:
-    """Insert a ranked candidate; the value JSON is encrypted (`value_ct`) for Art. 9 attributes."""
+    """Insert a ranked candidate; the value JSON is encrypted (`value_ct`) for Art. 9 attributes.
+
+    `calibrated_reliability` is the per-user-scoring output (M2.5) — the calibrated point the user
+    sees; NULL when the calibration map has no matching bucket (fail closed, never the raw number).
+    """
     params: dict[str, object] = {
         "inf": inference_id,
         "rank": rank,
         "value": value_json,
         "raw": raw_confidence,
         "source": confidence_source,
+        "calibrated": calibrated_reliability,
     }
     if is_art9:
         params |= {"owner": owner_user_id, "mk": master_key}
         sql = (
             "INSERT INTO inference_candidates (inference_id, rank, value_ct, raw_confidence, "
-            "confidence_source) VALUES (:inf, :rank, encrypt_field(:owner, :value, :mk), "
-            ":raw, :source) RETURNING id"
+            "confidence_source, calibrated_reliability) "
+            "VALUES (:inf, :rank, encrypt_field(:owner, :value, :mk), :raw, :source, :calibrated) "
+            "RETURNING id"
         )
     else:
         sql = (
             "INSERT INTO inference_candidates (inference_id, rank, value, raw_confidence, "
-            "confidence_source) VALUES (:inf, :rank, CAST(:value AS jsonb), :raw, :source) "
-            "RETURNING id"
+            "confidence_source, calibrated_reliability) "
+            "VALUES (:inf, :rank, CAST(:value AS jsonb), :raw, :source, :calibrated) RETURNING id"
         )
     candidate_id: UUID = (await conn.execute(text(sql), params)).scalar_one()
     return candidate_id

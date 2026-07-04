@@ -9,17 +9,20 @@ Content is decrypted in memory only and never logged.
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.config import get_attack_settings
 from app.domain.attributes import BY_CODE
+from app.domain.calibration import bucket_edge
 from app.domain.consistency import aggregate
 from app.domain.normalize import normalize_guess
-from app.domain.output_schema import AttributeCode, AttributeGuess
+from app.domain.output_schema import AttributeCode, AttributeGuess, Confidence
 from app.gateway.client import Profiler
 from app.gateway.prompts import ENGINE_VERSION, build_user_prompt
+from app.repositories import calibration as calibration_repo
 from app.repositories import inferences as inferences_repo
 from app.repositories import profiles as profiles_repo
 from app.repositories import run_metrics as run_metrics_repo
@@ -117,6 +120,27 @@ def _valid_ref(ref_id: str, valid_item_ids: set[UUID]) -> UUID | None:
     return candidate if candidate in valid_item_ids else None
 
 
+async def _calibrated_reliability(
+    conn: AsyncConnection, attribute: AttributeCode, confidence: Confidence
+) -> Decimal | None:
+    """Per-user scoring (M2.5): the candidate's raw confidence through the Job-1 calibration map.
+
+    Keyed by the attack ENGINE_VERSION (the inference's own pin), the candidate's signal + N, and
+    its confidence bucket. A map miss returns None — the user is shown no reliability rather than a
+    raw number (the fail-closed separation rule). Never the bare raw confidence.
+    """
+    n = confidence.agreement.n_runs if confidence.agreement is not None else 1
+    return await calibration_repo.get_calibrated_reliability(
+        conn,
+        engine_version=ENGINE_VERSION,
+        attribute_code=attribute,
+        modality="text",
+        signal=confidence.source,
+        n=n,
+        confidence_bucket=bucket_edge(confidence.raw),
+    )
+
+
 async def persist_attribute_guess(
     conn: AsyncConnection,
     guess: AttributeGuess,
@@ -126,8 +150,13 @@ async def persist_attribute_guess(
     profile_id: UUID,
     run_id: UUID,
     master_key: str,
+    calibrate: bool = False,
 ) -> None:
-    """Persist one canonical guess (inference + candidates + evidence); Art. 9 values encrypted."""
+    """Persist one canonical guess (inference + candidates + evidence); Art. 9 values encrypted.
+
+    When `calibrate` (the user attack path — not eval, which builds the map), each candidate's raw
+    confidence is scored through the calibration map and stored as `calibrated_reliability`.
+    """
     is_art9 = BY_CODE[guess.attribute].is_art9
     inference_id = await inferences_repo.insert_inference_v2(
         conn,
@@ -142,6 +171,11 @@ async def persist_attribute_guess(
         master_key=master_key,
     )
     for candidate in guess.candidates:
+        calibrated = (
+            await _calibrated_reliability(conn, guess.attribute, candidate.confidence)
+            if calibrate
+            else None
+        )
         candidate_id = await inferences_repo.insert_candidate(
             conn,
             inference_id=inference_id,
@@ -149,6 +183,7 @@ async def persist_attribute_guess(
             value_json=candidate.value.model_dump_json(),
             raw_confidence=candidate.confidence.raw,
             confidence_source=candidate.confidence.source,
+            calibrated_reliability=calibrated,
             owner_user_id=owner_user_id,
             is_art9=is_art9,
             master_key=master_key,
@@ -219,6 +254,7 @@ async def execute_attack_run(
             profile_id=run.profile_id,
             run_id=run_id,
             master_key=master_key,
+            calibrate=True,  # user attack → score each guess through the Job-1 calibration map
         )
     latency_ms = int((time.monotonic() - started) * 1000)
     await run_metrics_repo.insert_run_metrics(

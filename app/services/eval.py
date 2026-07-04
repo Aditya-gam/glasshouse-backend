@@ -215,11 +215,15 @@ async def run_eval(
             by_hardness=score.by_hardness,
             engine_version=scoring_version,
         )
-    for curve in build_calibration(samples):  # the reliability map, pinned to the scoring version
+    # The map is keyed by the ATTACK engine_version (bare), not the scoring version, because a
+    # user's inference pins the bare engine and looks the map up by it (calibration.md: the
+    # engine_version "must match the inference's"). The judge that measured the accuracy is pinned
+    # on eval_results, not on the map — a judge change → re-run the benchmark → the map upserts.
+    for curve in build_calibration(samples):
         for bucket in curve.buckets:
             await calibration_repo.upsert_calibration_bucket(
                 conn,
-                engine_version=scoring_version,
+                engine_version=ENGINE_VERSION,
                 attribute_code=curve.attribute,
                 modality=_MODALITY,
                 signal=curve.signal,

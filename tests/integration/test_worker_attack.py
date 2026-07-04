@@ -8,6 +8,7 @@ gateway failure marks it failed and re-raises (so arq retries / dead-letters).
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterable, Iterator
+from decimal import Decimal
 
 import pytest
 import pytest_asyncio
@@ -23,6 +24,7 @@ from app.db.rls import set_rls_context
 from app.domain.output_schema import RawAttributeGuess, RawCandidate
 from app.gateway.prompts import ENGINE_VERSION
 from app.ingestion.base import Method, ParsedTextRecord, Platform
+from app.repositories import calibration as calibration_repo
 from app.repositories import runs as runs_repo
 from app.repositories.profiles import get_or_create_self_profile
 from app.repositories.runs import insert_run_v2
@@ -197,6 +199,76 @@ async def test_attack_run_executes_and_succeeds(
             )
         }
     assert await _run_status(owner_engine, run_id) == "succeeded" and "location" in attributes
+
+
+async def _reset_calibration(owner_engine: AsyncEngine) -> None:
+    async with owner_engine.begin() as conn:
+        await conn.execute(text("DELETE FROM calibration"))
+
+
+async def _seed_calibration(
+    owner_engine: AsyncEngine, *, bucket: float, reliability: float
+) -> None:
+    # the fake gateway's single location guess, run N=3 identically, agrees 3/3 → raw 1.0 → bucket
+    # 0.9, signal self_consistency, n=3. Seed via the production upsert so the numeric bucket is
+    # canonicalized identically to the lookup (Decimal(str(...)) — a raw float would mis-match).
+    async with owner_engine.begin() as conn:
+        await calibration_repo.upsert_calibration_bucket(
+            conn,
+            engine_version=ENGINE_VERSION,
+            attribute_code="location",
+            modality="text",
+            signal="self_consistency",
+            n=3,
+            confidence_bucket=bucket,
+            empirical_accuracy=reliability,
+            ece=0.1,
+        )
+
+
+async def _location_calibrated(owner_engine: AsyncEngine, run_id: uuid.UUID) -> Decimal | None:
+    async with owner_engine.connect() as conn:
+        value: Decimal | None = (
+            await conn.execute(
+                text(
+                    "SELECT c.calibrated_reliability FROM inference_candidates c "
+                    "JOIN inferences i ON i.id = c.inference_id "
+                    "WHERE i.run_id = :r AND i.attribute_code = 'location' AND c.rank = 1"
+                ),
+                {"r": run_id},
+            )
+        ).scalar_one()
+        return value
+
+
+@pytest.mark.usefixtures("patched_worker")
+async def test_attack_stores_calibrated_reliability_from_the_map(
+    monkeypatch: pytest.MonkeyPatch, owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    monkeypatch.setattr(attack_module, "GatewayClient", _FakeGatewayClient)
+    await _reset_calibration(owner_engine)
+    await _seed_calibration(owner_engine, bucket=0.9, reliability=0.76)
+    user_id, run_id = await _seed(owner_engine, app_engine, consented=True)
+
+    await attack_run({}, str(run_id), str(user_id))
+
+    # per-user scoring maps the raw agreement (1.0 → bucket 0.9) to the calibrated 0.76.
+    calibrated = await _location_calibrated(owner_engine, run_id)
+    assert calibrated is not None and float(calibrated) == 0.76
+
+
+@pytest.mark.usefixtures("patched_worker")
+async def test_attack_fails_closed_when_calibration_missing(
+    monkeypatch: pytest.MonkeyPatch, owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    monkeypatch.setattr(attack_module, "GatewayClient", _FakeGatewayClient)
+    await _reset_calibration(owner_engine)  # no map row for this engine/bucket
+    user_id, run_id = await _seed(owner_engine, app_engine, consented=True)
+
+    await attack_run({}, str(run_id), str(user_id))
+
+    # a map miss stores NULL — the user is shown no reliability, never the raw number.
+    assert await _location_calibrated(owner_engine, run_id) is None
 
 
 @pytest.mark.usefixtures("patched_worker")
