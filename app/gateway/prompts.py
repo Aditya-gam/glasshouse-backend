@@ -11,6 +11,10 @@ from collections.abc import Sequence
 
 # (prompt id + model slot) — the calibration pin stored on every inference (output-schema.md §2).
 ENGINE_VERSION = "attack_text_v1@profiler"
+# The held-out adversary reuses the attack prompt through the `adversary` slot (defend M3.1); its
+# before/after has its own calibration, so it pins a distinct engine_version (independent-adversary
+# §6). A different adversary model → recompute the adversary's calibration + re-run remediations.
+ADVERSARY_VERSION = "attack_text_v1@adversary"
 
 ATTACK_TEXT_SYSTEM = """\
 <role>

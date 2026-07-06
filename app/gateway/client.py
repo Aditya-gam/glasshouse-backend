@@ -78,17 +78,11 @@ class GatewayClient:
         )
         return guess
 
-    async def profile_all(
-        self, *, content: str, temperature: float = 0.0
+    async def _joint_pass(
+        self, *, content: str, temperature: float, slot: Slot
     ) -> list[RawAttributeGuess]:
-        """The joint pass: one profiler-slot call inferring all 8 attributes (M1.7).
-
-        `content` is the datamarked user prompt (gateway/prompts.build_user_prompt); the system
-        prompt is `attack_text_v1`. `temperature` is 0 for the deterministic dev pass and raised
-        for the self-consistency ensemble's N runs (confidence-and-self-consistency.md §2). Returns
-        the emission guesses; the normalizer canonicalizes them.
-        """
-        slot: Slot = "profiler"
+        """The joint 8-attribute attack pass through one gateway slot (`attack_text_v1` system
+        prompt). Shared by the Profiler and the held-out adversary; the slot picks the model."""
         output: RawProfilerOutput = await self._client.chat.completions.create(
             model=slot,
             response_model=RawProfilerOutput,
@@ -100,6 +94,28 @@ class GatewayClient:
             ],
         )
         return output.guesses
+
+    async def profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
+        """The joint pass: one profiler-slot call inferring all 8 attributes (M1.7).
+
+        `content` is the datamarked user prompt (gateway/prompts.build_user_prompt); the system
+        prompt is `attack_text_v1`. `temperature` is 0 for the deterministic dev pass and raised
+        for the self-consistency ensemble's N runs (confidence-and-self-consistency.md §2). Returns
+        the emission guesses; the normalizer canonicalizes them.
+        """
+        return await self._joint_pass(content=content, temperature=temperature, slot="profiler")
+
+    async def adversary_profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
+        """The held-out adversary re-attack (defend/independent-adversary.md, M3.1) — the same joint
+        pass through the `adversary` slot (a **different** model than the profiler; the startup
+        separation assertion guarantees it). Blind: it sees only the content it is given, never the
+        original text or the edit — so the rewriter can't game a judge it can't see.
+        """
+        return await self._joint_pass(content=content, temperature=temperature, slot="adversary")
 
     async def judge_same(self, a: str, b: str) -> bool:
         """Semantic-equivalence judge (the `judge` slot) — clusters occupation guesses (M1.8b).
