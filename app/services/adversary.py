@@ -22,7 +22,7 @@ from app.domain.eval_match import candidate_hits
 from app.domain.output_schema import AttributeCode, AttributeGuess, RawAttributeGuess
 from app.gateway.prompts import build_user_prompt
 from app.services.geocoding import Geocoder
-from app.services.inference import ensemble_consensus, resolve_ensemble
+from app.services.inference import ProfileFn, ensemble_consensus, resolve_ensemble
 from app.services.occupation import OccupationJudge, StringMatchJudge
 
 
@@ -56,8 +56,8 @@ def _abstained(attribute: AttributeCode) -> AttributeGuess:
     return AttributeGuess(attribute=attribute, modality="text", status="abstained", candidates=[])
 
 
-async def adversary_attack(
-    adversary: Adversary,
+async def attack_content(
+    profile_fn: ProfileFn,
     content: Sequence[tuple[str, str]],
     *,
     target_attribute: AttributeCode,
@@ -67,18 +67,18 @@ async def adversary_attack(
     n_runs: int | None = None,
     temperature: float | None = None,
 ) -> AdversaryFinding:
-    """Re-attack `content` (item id, text) with the held-out adversary, scoped to one attribute.
+    """Re-attack `content` (item id, text) through a held-out slot, scoped to one attribute.
 
-    Runs the same N-run ensemble the Profiler uses, through the adversary slot, then reports the
-    target attribute's consensus + whether `true_value` survives in the top-3. Blind by
-    construction — only `content` is passed to the model.
+    The re-attack primitive parameterized by the slot's profile function — the **evaluator**
+    adversary (M3.1) and the **feedback** adversary (M3.3 anonymizer loop) both use it, each through
+    its own slot. Runs the same N-run ensemble the Profiler uses, then reports the target
+    attribute's consensus + whether `true_value` survives in the top-3. Blind: only content reaches
+    the model.
     """
     runs, temp = resolve_ensemble(n_runs, temperature)
     prompt = build_user_prompt(list(content))
     guesses = await ensemble_consensus(
-        lambda text, temperature: adversary.adversary_profile_all(
-            content=text, temperature=temperature
-        ),
+        profile_fn,
         prompt,
         geocoder,
         runs=runs,
@@ -93,4 +93,30 @@ async def adversary_attack(
         attribute=target_attribute,
         guess=guess,
         value_recovered=value_recovered(target_attribute, guess, true_value),
+    )
+
+
+async def adversary_attack(
+    adversary: Adversary,
+    content: Sequence[tuple[str, str]],
+    *,
+    target_attribute: AttributeCode,
+    true_value: object,
+    geocoder: Geocoder,
+    judge: OccupationJudge | None = None,
+    n_runs: int | None = None,
+    temperature: float | None = None,
+) -> AdversaryFinding:
+    """Re-attack `content` with the held-out **evaluator** adversary (the `adversary` slot)."""
+    return await attack_content(
+        lambda text, temperature: adversary.adversary_profile_all(
+            content=text, temperature=temperature
+        ),
+        content,
+        target_attribute=target_attribute,
+        true_value=true_value,
+        geocoder=geocoder,
+        judge=judge,
+        n_runs=n_runs,
+        temperature=temperature,
     )

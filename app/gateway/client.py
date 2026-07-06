@@ -14,11 +14,27 @@ from pydantic import BaseModel, Field
 
 from app.core.config import GatewaySettings, get_gateway_settings
 from app.domain.output_schema import RawAttributeGuess, RawProfilerOutput
-from app.gateway.prompts import ATTACK_TEXT_SYSTEM, JUDGE_OCCUPATION_SYSTEM, MATCH_JUDGE_SYSTEM
+from app.gateway.prompts import (
+    ANONYMIZE_SYSTEM,
+    ATTACK_TEXT_SYSTEM,
+    JUDGE_OCCUPATION_SYSTEM,
+    MATCH_JUDGE_SYSTEM,
+    build_anonymize_prompt,
+)
 from app.gateway.slots import Slot
 
 MatchVerdictLabel = Literal["yes", "partial", "no"]
 GeoLevel = Literal["country", "region", "city", "neighborhood"]
+EditOperation = Literal["generalize", "remove_span", "remove_item"]
+
+
+class AnonymizerEdit(BaseModel):
+    """The anonymizer emission (anonymize_text_v1): reason-then-edit, one truthful localized edit."""  # noqa: E501
+
+    reasoning: str
+    operation: EditOperation
+    edited_text: str
+    note: str  # a short user-facing description of what changed
 
 
 class _Equivalence(BaseModel):
@@ -116,6 +132,42 @@ class GatewayClient:
         original text or the edit — so the rewriter can't game a judge it can't see.
         """
         return await self._joint_pass(content=content, temperature=temperature, slot="adversary")
+
+    async def feedback_profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
+        """The **feedback** adversary re-attack for the anonymizer loop (defend/text-remediation.md,
+        M3.3) — the joint pass through the `feedback_adversary` slot. Distinct from the *evaluator*
+        `adversary` slot (the separation chain), so the editor refines against one model but is
+        proven by a different, held-out one — it cannot game the final judge.
+        """
+        return await self._joint_pass(
+            content=content, temperature=temperature, slot="feedback_adversary"
+        )
+
+    async def anonymize(
+        self, *, text: str, spans: list[str], attribute: str, feedback: str | None = None
+    ) -> AnonymizerEdit:
+        """One truthful localized privacy edit through the `anonymizer` slot (defend M3.3).
+
+        Given the text + the leaking spans (+ optional adversary feedback to refine against),
+        returns a minimal, generalization-first rewrite. The anonymizer is separate from the
+        feedback/evaluator adversaries and the judges (the separation chain). Content never logged.
+        """
+        result: AnonymizerEdit = await self._client.chat.completions.create(
+            model="anonymizer",
+            response_model=AnonymizerEdit,
+            max_retries=self._settings.gateway_max_retries,
+            temperature=0.3,  # a little latitude to find a good paraphrase; still low
+            messages=[
+                {"role": "system", "content": ANONYMIZE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": build_anonymize_prompt(text, spans, attribute, feedback),
+                },
+            ],
+        )
+        return result
 
     async def judge_same(self, a: str, b: str) -> bool:
         """Semantic-equivalence judge (the `judge` slot) — clusters occupation guesses (M1.8b).
