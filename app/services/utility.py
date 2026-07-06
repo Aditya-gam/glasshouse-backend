@@ -30,7 +30,13 @@ _GRADE_SCORE: dict[UtilityGrade, float] = {
     "partially": 0.5,
     "lost": 0.0,
 }
-_EMBED_PREFILTER = 0.5  # cosine below this → obviously destructive; skip the judge, meaning "lost"
+# An edit that keeps < this fraction of the original's length is gutted → obviously destructive.
+# This is the reliable, embedder-independent destructive gate: the bge embedder L2-normalizes and
+# scores even an empty edit ~0.55 cosine, so a cosine threshold alone cannot catch delete-by-cheat.
+_MIN_LENGTH_RATIO = 0.25
+# Cosine below this is a *secondary* screen for a semantically-unrelated replacement (bge's floor is
+# high, so this is soft; the length guard is the hard gate). Tuning param (utility-preservation §7).
+_EMBED_PREFILTER = 0.5
 _DEFAULT_FLOOR = 0.5  # utility_score at/above this passes the pre-filter (utility-preservation §3)
 
 
@@ -77,8 +83,11 @@ async def assess_utility(
     """
     vectors = embedder.embed([original, edited])
     similarity = _cosine(vectors[0], vectors[1])
-    if similarity < _EMBED_PREFILTER:
-        # destructive edit — don't spend the judge; meaning is lost.
+    stripped = edited.strip()
+    gutted = not stripped or len(stripped) < _MIN_LENGTH_RATIO * len(original.strip())
+    if gutted or similarity < _EMBED_PREFILTER:
+        # obviously destructive (deleted/gutted, or semantically unrelated) — don't spend the judge;
+        # utility is lost. The length guard catches the delete-by-cheat the cosine floor misses.
         return UtilityAssessment(
             utility_score=0.0,
             meaning="lost",
