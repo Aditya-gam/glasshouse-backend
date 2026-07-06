@@ -2982,6 +2982,7 @@
     },
     "/v1/inferences": {
       "get": {
+        "description": "The user's attribute cards (RLS-scoped), optionally filtered to one run / profile.",
         "operationId": "list_inferences_v1_inferences_get",
         "parameters": [
           {
@@ -3120,7 +3121,7 @@
     },
     "/v1/inferences/{inference_id}": {
       "get": {
-        "description": "Ranked candidates with calibrated reliability + the evidence join.",
+        "description": "Ranked candidates with calibrated reliability + the evidence join. Lands with M3.",
         "operationId": "get_inference_v1_inferences__inference_id__get",
         "parameters": [
           {
