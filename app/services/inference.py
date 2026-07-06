@@ -8,6 +8,7 @@ Content is decrypted in memory only and never logged.
 
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
@@ -19,7 +20,7 @@ from app.domain.attributes import BY_CODE
 from app.domain.calibration import bucket_edge
 from app.domain.consistency import aggregate
 from app.domain.normalize import normalize_guess
-from app.domain.output_schema import AttributeCode, AttributeGuess, Confidence
+from app.domain.output_schema import AttributeCode, AttributeGuess, Confidence, RawAttributeGuess
 from app.gateway.client import Profiler
 from app.gateway.prompts import ENGINE_VERSION, build_user_prompt
 from app.repositories import calibration as calibration_repo
@@ -35,6 +36,9 @@ from app.services.occupation import OccupationJudge, StringMatchJudge, aggregate
 
 # --- M1.7 joint attack -----------------------------------------------------------------------
 
+# One ensemble run: (content, temperature) → raw guesses from a gateway slot (profiler/adversary).
+ProfileFn = Callable[[str, float], Awaitable[list[RawAttributeGuess]]]
+
 
 @dataclass(frozen=True)
 class ProfileInference:
@@ -45,7 +49,7 @@ class ProfileInference:
     model_calls: int
 
 
-def _resolve_ensemble(n_runs: int | None, temperature: float | None) -> tuple[int, float]:
+def resolve_ensemble(n_runs: int | None, temperature: float | None) -> tuple[int, float]:
     """(runs, temperature) for the ensemble — N=1 dev/fast is deterministic (temp 0)."""
     settings = get_attack_settings()
     runs = n_runs if n_runs is not None else settings.n_runs
@@ -55,6 +59,46 @@ def _resolve_ensemble(n_runs: int | None, temperature: float | None) -> tuple[in
         else (temperature if temperature is not None else settings.sampling_temperature)
     )
     return runs, temp
+
+
+async def ensemble_consensus(
+    profile_fn: ProfileFn,
+    content: str,
+    geocoder: Geocoder,
+    *,
+    runs: int,
+    temp: float,
+    allow_special_category: bool,
+    judge: OccupationJudge,
+) -> list[AttributeGuess]:
+    """N-run ensemble over already-built `content` → per-attribute consensus (no retrieval, no IO
+    beyond the gateway + geocoder).
+
+    Shared by the Profiler (`infer_profile`) and the held-out adversary (`services.adversary`), so
+    the two run byte-identical inference logic through different gateway slots. `profile_fn` names
+    the slot (profiler vs adversary). Content is never logged.
+    """
+    by_attribute: dict[AttributeCode, list[AttributeGuess]] = defaultdict(list)
+    for _ in range(runs):
+        seen: set[AttributeCode] = set()
+        for raw in await profile_fn(content, temp):
+            if raw.attribute in seen:  # one guess per attribute per run → the denominator stays N
+                continue
+            seen.add(raw.attribute)
+            by_attribute[raw.attribute].append(await enrich_geo(normalize_guess(raw), geocoder))
+
+    guesses: list[AttributeGuess] = []
+    for attribute, attribute_guesses in by_attribute.items():
+        if BY_CODE[attribute].is_art9 and not allow_special_category:
+            continue  # Art. 9 (birthplace) needs explicit special-category consent — skip
+        if runs < 2:
+            consensus = attribute_guesses[0]  # dev/fast: the single self_reported pass
+        elif attribute == "occupation":
+            consensus = await aggregate_occupation(attribute_guesses, judge, n_runs=runs)
+        else:
+            consensus = aggregate(attribute, attribute_guesses, n_runs=runs)
+        guesses.append(consensus)
+    return guesses
 
 
 async def infer_profile(
@@ -80,34 +124,21 @@ async def infer_profile(
     content decrypted in memory, never logged.
     """
     occupation_judge = judge or StringMatchJudge()
-    runs, temp = _resolve_ensemble(n_runs, temperature)
+    runs, temp = resolve_ensemble(n_runs, temperature)
     evidence = await retrieve_evidence(
         conn, embedder, pii_detector, profile_id=profile_id, master_key=master_key
     )
     valid_item_ids = {item.id for item in evidence}
     content = build_user_prompt([(str(item.id), item.text) for item in evidence])
-
-    by_attribute: dict[AttributeCode, list[AttributeGuess]] = defaultdict(list)
-    for _ in range(runs):
-        seen: set[AttributeCode] = set()
-        for raw in await gateway.profile_all(content=content, temperature=temp):
-            if raw.attribute in seen:  # one guess per attribute per run → the denominator stays N
-                continue
-            seen.add(raw.attribute)
-            by_attribute[raw.attribute].append(await enrich_geo(normalize_guess(raw), geocoder))
-
-    guesses: list[AttributeGuess] = []
-    for attribute, attribute_guesses in by_attribute.items():
-        if BY_CODE[attribute].is_art9 and not allow_special_category:
-            continue  # Art. 9 (birthplace) needs explicit special-category consent — skip
-        if runs < 2:
-            # dev/fast: the single self_reported pass, no clustering
-            consensus = attribute_guesses[0]
-        elif attribute == "occupation":
-            consensus = await aggregate_occupation(attribute_guesses, occupation_judge, n_runs=runs)
-        else:
-            consensus = aggregate(attribute, attribute_guesses, n_runs=runs)
-        guesses.append(consensus)
+    guesses = await ensemble_consensus(
+        lambda text, temperature: gateway.profile_all(content=text, temperature=temperature),
+        content,
+        geocoder,
+        runs=runs,
+        temp=temp,
+        allow_special_category=allow_special_category,
+        judge=occupation_judge,
+    )
     return ProfileInference(guesses=guesses, valid_item_ids=valid_item_ids, model_calls=runs)
 
 
