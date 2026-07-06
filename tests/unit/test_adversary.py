@@ -96,6 +96,37 @@ async def test_adversary_is_blind_to_everything_but_the_content() -> None:
     assert all("original" not in seen.lower() for seen in adversary.seen_content)
 
 
+class _WrongAdversary:
+    """A fooled adversary: it still confidently infers a location, but the WRONG one."""
+
+    async def adversary_profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
+        return [
+            RawAttributeGuess(
+                attribute="location",
+                status="inferred",
+                candidates=[RawCandidate(value_text="Boston, MA", self_confidence=0.9)],
+            )
+        ]
+
+
+async def test_inferred_but_wrong_value_is_not_recovered() -> None:
+    # the defense-won signal: the adversary still guesses, but guesses wrong → not recovered.
+    finding = await adversary_attack(
+        _WrongAdversary(),
+        [("itm1", "the edited text")],
+        target_attribute="location",
+        true_value="Seattle, WA",
+        geocoder=_FakeGeocoder(),
+        n_runs=2,
+        temperature=0.0,
+    )
+
+    assert finding.guess.status == "inferred"  # the adversary was NOT silenced...
+    assert finding.value_recovered is False  # ...but it no longer recovers the true value
+
+
 async def test_adversary_scoped_to_target_abstains_when_not_inferred() -> None:
     # the adversary abstains on occupation → not recovered (what a successful defense looks like).
     finding = await adversary_attack(
