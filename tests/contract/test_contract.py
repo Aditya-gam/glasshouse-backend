@@ -1,8 +1,8 @@
 """Schemathesis contract test (M5.1) — the published surface conforms to its OpenAPI.
 
 Fuzzes every endpoint from the schema and validates responses against it. The DB-backed
-/v1/runs endpoints are exercised by test_runs_api; here the contract-first stubs return the
-documented 501, so the server-error check is skipped (501 is the contract, not a crash).
+/v1/runs + /v1/inferences endpoints are exercised by test_runs_api / test_inferences_api; the
+remaining contract-first stubs return the documented 501 (the contract, not a crash).
 Full fuzzing as a CI gate is M7.3.
 """
 
@@ -21,9 +21,9 @@ from schemathesis.specs.openapi.checks import (
 from app.main import app
 
 _schema = schemathesis.openapi.from_asgi("/openapi.json", app)
-# Exclude the DB-backed /v1/runs (covered by test_runs_api) and the infra probes /healthz,
-# /readyz (operational endpoints needing a live DB, not part of the v1 product contract).
-_contract = _schema.exclude(path_regex=r"^/(v1/runs|healthz|readyz)")
+# Exclude the DB-backed /v1/runs + /v1/inferences (covered by test_runs_api / test_inferences_api)
+# and the infra probes /healthz, /readyz (need a live DB, not part of the v1 product contract).
+_contract = _schema.exclude(path_regex=r"^/(v1/runs|v1/inferences|healthz|readyz)")
 # Positive conformance only: responses match the declared schema, status, and content type.
 # Negative/coverage probing (unsupported methods → RFC 9110 Allow headers, etc.) is M7.3's gate.
 _POSITIVE_CHECKS = [

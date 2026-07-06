@@ -4,7 +4,9 @@ The canonical inference + its ranked candidates + evidence children, all RLS-sco
 and reasoning are encrypted at rest (`encrypt_field`, DEK never leaves Postgres).
 """
 
+from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -122,3 +124,64 @@ async def insert_evidence(
             "mk": master_key,
         },
     )
+
+
+# --- dashboard read (M2.5b): one card per attribute, top-1 candidate + calibrated reliability --
+
+
+@dataclass(frozen=True)
+class DashboardInference:
+    """One attribute's card data: status, the top-1 value, its calibrated reliability, evidence."""
+
+    attribute_code: str
+    status: str
+    value: dict[str, Any] | None  # the canonical top-1 value (decrypted), or None if abstained
+    calibrated_reliability: Decimal | None
+    evidence_count: int
+
+
+async def list_dashboard_inferences(
+    conn: AsyncConnection,
+    *,
+    master_key: str,
+    run_id: UUID | None = None,
+    profile_id: UUID | None = None,
+) -> list[DashboardInference]:
+    """The caller's inferences (RLS-scoped) as dashboard rows: top-1 value + calibrated reliability.
+
+    Exactly one card per attribute — the **latest** inference for each (`DISTINCT ON` + newest
+    first), so a user who has run several attacks sees their current audit, not one card per run.
+    The Art. 9 value is decrypted in-query with the caller's DEK (`app_user_id()`), so plaintext
+    never leaves Postgres in a column; the raw model confidence is never selected (only the
+    calibrated point). Optionally filtered to one run / profile.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT DISTINCT ON (i.attribute_code) i.attribute_code, i.status, "
+            "  CASE WHEN c.value IS NOT NULL THEN c.value "
+            "       WHEN c.value_ct IS NOT NULL "
+            "         THEN decrypt_field(app_user_id(), c.value_ct, :mk)::jsonb "
+            "       ELSE NULL END AS value, "
+            "  c.calibrated_reliability, "
+            "  COALESCE((SELECT count(*) FROM inference_evidence e "
+            "            WHERE e.candidate_id = c.id), 0) "
+            "FROM inferences i "
+            "LEFT JOIN inference_candidates c ON c.inference_id = i.id AND c.rank = 1 "
+            # cast the optional filters so asyncpg can type a NULL bound param in `IS NULL`.
+            "WHERE (CAST(:run_id AS uuid) IS NULL OR i.run_id = CAST(:run_id AS uuid)) "
+            "  AND (CAST(:profile_id AS uuid) IS NULL OR i.profile_id = CAST(:profile_id AS uuid)) "
+            # DISTINCT ON keeps the first row per attribute → newest wins (the current audit).
+            "ORDER BY i.attribute_code, i.created_at DESC"
+        ),
+        {"mk": master_key, "run_id": run_id, "profile_id": profile_id},
+    )
+    return [
+        DashboardInference(
+            attribute_code=row[0],
+            status=row[1],
+            value=row[2],
+            calibrated_reliability=row[3],
+            evidence_count=row[4],
+        )
+        for row in result
+    ]
