@@ -1,0 +1,4 @@
+{
+  "_comment": "Per-attribute top-1 accuracy floor for the SynthPAI text benchmark (measure/eval-as-ci-gate.md). Set from the FIRST clean run_eval on real data; a later benchmark below any floor fails the gate. Empty {} = gate not yet armed (no real benchmark has run). Populate e.g. {\"location\": 0.60, \"occupation\": 0.50}.",
+  "floor": {}
+}
