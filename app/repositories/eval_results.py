@@ -40,3 +40,19 @@ async def insert_eval_result(
             "ev": engine_version,
         },
     )
+
+
+async def latest_eval_top1(conn: AsyncConnection) -> dict[str, float]:
+    """Per-attribute top-1 accuracy for the most recent `eval` run (the CI floor gate's input).
+
+    Privileged read (no app grant on `eval_results`). Empty when no benchmark has run yet.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT er.attribute_code, er.top1_acc FROM eval_results er "
+            "WHERE er.run_id = ("
+            "  SELECT id FROM runs WHERE type = 'eval' ORDER BY created_at DESC LIMIT 1"
+            ")"
+        )
+    )
+    return {row[0]: float(row[1]) for row in result}
