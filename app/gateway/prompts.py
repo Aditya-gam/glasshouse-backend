@@ -68,6 +68,60 @@ engineer"). Answer only with the boolean field — no explanation."""
 # pins calibration alongside the attack engine_version (adversary-judge.md §5, hard invalidation).
 MATCH_JUDGE_VERSION = "match_judge_v1@judge"
 
+# The utility judge (`utility_judge_v1`) — runs on the `judge` slot (may share the match-judge's
+# model; must differ from the anonymizer: editor ≠ judge). Reference-anchored, one criterion/call.
+UTILITY_JUDGE_VERSION = "utility_judge_v1@judge"
+
+_UTILITY_MEANING_SYSTEM = """\
+<role>
+You are a utility judge. You decide how much of a text's ORIGINAL non-sensitive meaning is preserved
+after a privacy edit, ignoring the sensitive attribute that was deliberately removed.
+</role>
+<task>
+Given ORIGINAL, EDITED, and the SENSITIVE_ATTRIBUTE that was removed, grade how well EDITED
+preserves the REST of ORIGINAL's meaning/intent — the review, the joke, the question, minus the
+sensitive cue: fully | mostly | partially | lost. Give a confidence 0–1.
+</task>
+<rules>
+- The sensitive cue is SUPPOSED to be gone — do NOT penalize its removal. Penalize loss of the
+  OTHER meaning.
+- Compare EDITED to ORIGINAL; do not invent missing context.
+- Reason briefly, then commit. Lower the confidence if unsure (it routes to a human review).
+- Emit ONLY the JSON fields.
+</rules>"""
+
+_UTILITY_READABILITY_SYSTEM = """\
+<role>
+You are a readability judge. You decide how naturally an EDITED text reads on its own — grammar,
+flow, coherence — regardless of its meaning or any privacy edit.
+</role>
+<task>
+Grade how fluent and natural EDITED reads: fully (reads naturally) | mostly | partially | lost
+(garbled/broken). Give a confidence 0–1.
+</task>
+<rules>
+- Judge ONLY readability, not whether meaning was preserved (that is a separate call).
+- Reason briefly, then commit. Lower the confidence if unsure.
+- Emit ONLY the JSON fields.
+</rules>"""
+
+UTILITY_JUDGE_SYSTEMS = {
+    "meaning": _UTILITY_MEANING_SYSTEM,
+    "readability": _UTILITY_READABILITY_SYSTEM,
+}
+
+
+def build_utility_prompt(original: str, edited: str, attribute: str, criterion: str) -> str:
+    """The utility judge's user message (meaning carries the attribute to ignore; readability not)."""  # noqa: E501
+    if criterion == "readability":
+        return f"<edited>{edited}</edited>"
+    return (
+        f"<sensitive_attribute>{attribute}</sensitive_attribute>\n"
+        f"<original>{original}</original>\n"
+        f"<edited>{edited}</edited>"
+    )
+
+
 MATCH_JUDGE_SYSTEM = """\
 <role>
 You are a careful evaluation judge. You decide whether a PREDICTED attribute value is equivalent to

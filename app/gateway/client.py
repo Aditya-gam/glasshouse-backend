@@ -19,13 +19,25 @@ from app.gateway.prompts import (
     ATTACK_TEXT_SYSTEM,
     JUDGE_OCCUPATION_SYSTEM,
     MATCH_JUDGE_SYSTEM,
+    UTILITY_JUDGE_SYSTEMS,
     build_anonymize_prompt,
+    build_utility_prompt,
 )
 from app.gateway.slots import Slot
 
 MatchVerdictLabel = Literal["yes", "partial", "no"]
 GeoLevel = Literal["country", "region", "city", "neighborhood"]
 EditOperation = Literal["generalize", "remove_span", "remove_item"]
+UtilityGrade = Literal["fully", "mostly", "partially", "lost"]
+UtilityCriterion = Literal["meaning", "readability"]
+
+
+class UtilityVerdict(BaseModel):
+    """The utility judge emission (utility_judge_v1): reason-then-grade, one criterion per call."""
+
+    reasoning: str
+    grade: UtilityGrade
+    confidence: float = Field(ge=0, le=1)
 
 
 class AnonymizerEdit(BaseModel):
@@ -144,6 +156,30 @@ class GatewayClient:
         return await self._joint_pass(
             content=content, temperature=temperature, slot="feedback_adversary"
         )
+
+    async def judge_utility(
+        self, *, original: str, edited: str, attribute: str, criterion: UtilityCriterion
+    ) -> UtilityVerdict:
+        """Grade utility preservation for one criterion (`utility_judge_v1`, the `judge` slot).
+
+        `meaning` grades how much of the ORIGINAL's non-sensitive intent survives (ignoring the
+        removed attribute); `readability` grades fluency alone — one criterion per call to avoid the
+        halo effect. The judge slot is separate from the anonymizer (editor ≠ judge). Not logged.
+        """
+        result: UtilityVerdict = await self._client.chat.completions.create(
+            model="judge",
+            response_model=UtilityVerdict,
+            max_retries=self._settings.gateway_max_retries,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": UTILITY_JUDGE_SYSTEMS[criterion]},
+                {
+                    "role": "user",
+                    "content": build_utility_prompt(original, edited, attribute, criterion),
+                },
+            ],
+        )
+        return result
 
     async def anonymize(
         self, *, text: str, spans: list[str], attribute: str, feedback: str | None = None
