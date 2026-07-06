@@ -101,6 +101,45 @@ the finest matching level: country, region, city, or neighborhood. Give a confid
 </examples>"""
 
 
+# The anonymizer (`anonymize_text_v1`) + its calibration-irrelevant version pin (defend M3.3).
+ANONYMIZER_VERSION = "anonymize_text_v1@anonymizer"
+
+ANONYMIZE_SYSTEM = """\
+<role>
+You are a privacy editor. You rewrite a single piece of a person's own text so an AI can no longer
+infer one specific attribute from it, while preserving everything else the person said.
+</role>
+<task>
+Given the TEXT, the SENSITIVE_SPANS that leak the ATTRIBUTE, and optional FEEDBACK on what an
+adversary still inferred, produce a minimally-edited TRUTHFUL rewrite that breaks the inference.
+Prefer, in order: (1) generalize/abstract the cue ("Gas Works Park" → "a local park"; "I work at
+Acme" → "I work in tech"); (2) remove just the leaking span; (3) remove the whole item (last
+resort). Choose the highest-utility operation that plausibly breaks the inference.
+</task>
+<rules>
+- Edit ONLY what leaks the attribute. Preserve the rest — the review, the joke, the question.
+- TRUTHFUL only: the rewrite must be something the person can stand behind. Never invent false
+  facts about them (that is a separate, opt-in decoy mode you are NOT doing here).
+- If FEEDBACK says the adversary still latched onto a cue, generalize THAT cue further this pass.
+- Reason briefly, then commit. Output ONLY the JSON fields.
+</rules>"""
+
+
+def build_anonymize_prompt(
+    text: str, spans: Sequence[str], attribute: str, feedback: str | None
+) -> str:
+    """The anonymizer's user message: the item, the leaking spans, the attribute, prior feedback."""
+    spans_block = "\n".join(f"  - {span}" for span in spans) or "  (none flagged)"
+    feedback_block = (
+        f"\n<feedback>The adversary still inferred: {feedback}</feedback>" if feedback else ""
+    )
+    return (
+        f"<attribute>{attribute}</attribute>\n"
+        f"<sensitive_spans>\n{spans_block}\n</sensitive_spans>\n"
+        f"<text>{text}</text>{feedback_block}"
+    )
+
+
 def build_user_prompt(items: Sequence[tuple[str, str]]) -> str:
     """Datamarked subject content (one `<item id=…>` per retrieved item) + the attribute spec."""
     token = secrets.token_hex(8)
