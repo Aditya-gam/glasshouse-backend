@@ -52,6 +52,35 @@ def test_value_recovery_flip_is_independent_of_significance() -> None:
     assert delta.value_recovery_flip is True and delta.significant is False
 
 
+def test_a_backfired_edit_is_never_significant() -> None:
+    # the edit made the adversary MORE confident (after > before) → a negative drop must never
+    # read as a proven privacy win. This locks the SIGN discipline (an abs() refactor would fail).
+    delta = assess_remediation(
+        [0.20, 0.22, 0.18, 0.21, 0.19],  # before: low
+        [0.85, 0.86, 0.84, 0.85, 0.87],  # after: high (worse)
+        recovered_before=True,
+        recovered_after=True,
+        floor_margin=0.05,
+    )
+
+    assert delta.drop.point < 0 and delta.drop.hi < 0  # the whole drop CI is negative
+    assert delta.significant is False and delta.value_recovery_flip is False
+
+
+def test_a_real_drop_can_be_significant_without_a_flip() -> None:
+    # a large, real confidence drop where the true value is STILL in the top-3 after: significant
+    # magnitude, but no safety flip. Pins the (significant=True, flip=False) quadrant.
+    delta = assess_remediation(
+        _BIG_DROP_BEFORE,
+        _BIG_DROP_AFTER,
+        recovered_before=True,
+        recovered_after=True,  # still recovered → no flip
+        floor_margin=0.05,
+    )
+
+    assert delta.significant is True and delta.value_recovery_flip is False
+
+
 def test_zero_variance_drop_is_still_gated_by_the_floor() -> None:
     # all-identical samples must NOT claim infinite significance — the global floor still applies.
     within = assess_remediation(
