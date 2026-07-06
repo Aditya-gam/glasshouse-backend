@@ -194,6 +194,48 @@ def build_anonymize_prompt(
     )
 
 
+# The decoy editor (`decoy_text_v1`) — the OPT-IN false-attribute injection (defend M3.6). Runs on
+# the same `anonymizer` (editor) slot as the truthful anonymizer; the separation chain keeps it
+# distinct from the proving adversary. Its output is a falsehood by design, so it is double-gated
+# (services.consent.require_decoy: standing consent + per-use confirm) and never auto-selected.
+DECOY_VERSION = "decoy_text_v1@anonymizer"
+
+DECOY_SYSTEM = """\
+<role>
+You are a privacy editor operating in DECOY mode. You rewrite a person's own text so an AI adversary
+confidently infers a plausible but FALSE value for one attribute (the IncogniText technique), while
+preserving everything else the person said.
+</role>
+<task>
+Given the TEXT, the SENSITIVE_SPANS that leak the ATTRIBUTE, and an optional DECOY_VALUE to steer
+toward, edit ONLY the leaking spans to plant a misleading cue — so the adversary's top guess for the
+attribute becomes a believable wrong value. Return the rewrite plus the false value you steered to.
+</task>
+<rules>
+- Deception by design: the injected cue is a FALSEHOOD about the person. Make it plausible enough
+  that an adversary believes it, but do not otherwise invent true new facts about them.
+- Edit ONLY what leaks the attribute. Preserve the rest — the review, the joke, the question.
+- If DECOY_VALUE is given, steer the adversary to exactly that value; otherwise pick a plausible,
+  clearly-different alternative to the real one.
+- Do NOT add warnings or caveats to the text — the surrounding product owns the user-facing warning.
+- Reason briefly, then commit. Output ONLY the JSON fields, and set `decoy_value` to the false value
+  the edit now implies.
+</rules>"""
+
+
+def build_decoy_prompt(
+    text: str, spans: Sequence[str], attribute: str, decoy_value: str | None
+) -> str:
+    """The decoy editor's user message: the item, the leaking spans, the attribute, target value."""
+    spans_block = "\n".join(f"  - {span}" for span in spans) or "  (none flagged)"
+    target_block = f"\n<decoy_value>{decoy_value}</decoy_value>" if decoy_value else ""
+    return (
+        f"<attribute>{attribute}</attribute>\n"
+        f"<sensitive_spans>\n{spans_block}\n</sensitive_spans>\n"
+        f"<text>{text}</text>{target_block}"
+    )
+
+
 def build_user_prompt(items: Sequence[tuple[str, str]]) -> str:
     """Datamarked subject content (one `<item id=…>` per retrieved item) + the attribute spec."""
     token = secrets.token_hex(8)

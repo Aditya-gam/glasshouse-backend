@@ -25,8 +25,10 @@ from app.db.rls import set_rls_context
 from app.repositories import consents as consents_repo
 from app.services.consent import (
     ConsentRequiredError,
+    DecoyNotConfirmedError,
     has_special_category_consent,
     require_consent,
+    require_decoy,
 )
 
 
@@ -145,6 +147,37 @@ async def test_special_category_consent_is_separate(
             await require_consent(conn, "self_audit")  # the run gate still blocks
 
 
+async def test_decoy_requires_the_standing_consent(
+    owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    user = await _seed_user(owner_engine)  # confirmed but never opted in → blocked
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user)
+        with pytest.raises(ConsentRequiredError):
+            await require_decoy(conn, confirmed=True)
+
+
+async def test_decoy_requires_the_per_use_confirmation(
+    owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    user = await _seed_user(owner_engine)
+    await _grant(owner_engine, user, "decoy")  # opted in, but this use is not confirmed → blocked
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user)
+        with pytest.raises(DecoyNotConfirmedError):
+            await require_decoy(conn, confirmed=False)
+
+
+async def test_decoy_allows_with_both_consent_and_confirmation(
+    owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    user = await _seed_user(owner_engine)
+    await _grant(owner_engine, user, "decoy")
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user)
+        await require_decoy(conn, confirmed=True)  # both gates hold → does not raise
+
+
 async def test_consent_error_maps_to_403_problem_json() -> None:
     """The edge maps the gate's exception to RFC 9457 problem+json (no DB needed)."""
     app = FastAPI()
@@ -163,3 +196,22 @@ async def test_consent_error_maps_to_403_problem_json() -> None:
     body = resp.json()
     assert body["type"].endswith("/consent-missing") and body["status"] == 403
     assert "self_audit" in body["detail"]
+
+
+async def test_decoy_unconfirmed_maps_to_403_problem_json() -> None:
+    """The decoy per-use gate maps to its own problem type (distinct from consent-missing)."""
+    app = FastAPI()
+    register_error_handlers(app)
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise DecoyNotConfirmedError()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/boom")
+
+    assert resp.status_code == 403
+    assert resp.headers["content-type"] == "application/problem+json"
+    body = resp.json()
+    assert body["type"].endswith("/decoy-unconfirmed") and body["status"] == 403
