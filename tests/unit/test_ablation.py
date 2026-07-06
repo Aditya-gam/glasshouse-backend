@@ -91,7 +91,9 @@ async def test_nothing_to_attribute_when_adversary_never_recovers() -> None:
     assert result.probes == 1  # one baseline probe, then it stops
 
 
-async def test_probe_cap_is_honoured() -> None:
+async def test_probe_cap_reports_honest_failure_not_a_bogus_set() -> None:
+    # redundant pins + a cap too small to break recovery: the greedily-removed items are NOT an
+    # actionable edit set (editing them wouldn't fix the leak), so report couldn't-localize.
     content = [("a", "I live in Seattle"), ("b", "from the Emerald City"), ("c", "good coffee")]
 
     result = await find_minimal_set(
@@ -103,4 +105,36 @@ async def test_probe_cap_is_honoured() -> None:
         max_probes=2,
     )
 
-    assert result.probes <= 2  # stops at the cap even before breaking recovery
+    assert result.probes <= 2  # stops at the cap
+    assert result.sufficient is False  # never broke recovery
+    assert result.minimal_set == []  # no false "edit these" target
+    assert all(effect == 0.0 for effect in result.marginal_effect.values())  # no bogus credit
+
+
+class _UnbreakableAdversary:
+    """Always recovers — the leak's signal survives even with every ablatable item removed."""
+
+    async def adversary_profile_all(
+        self, *, content: str, temperature: float = 0.0
+    ) -> list[RawAttributeGuess]:
+        return [
+            RawAttributeGuess(
+                attribute="location",
+                status="inferred",
+                candidates=[RawCandidate(value_text="Seattle, WA", self_confidence=0.9)],
+            )
+        ]
+
+
+async def test_no_sufficient_subset_is_reported_honestly() -> None:
+    # removing every ablatable item still recovers → "no small edit breaks this", not a fake set.
+    result = await find_minimal_set(
+        _UnbreakableAdversary(),
+        [("a", "text one"), ("b", "text two")],
+        target_attribute="location",
+        true_value="Seattle, WA",
+        geocoder=_FakeGeocoder(),
+    )
+
+    assert result.sufficient is False and result.minimal_set == []
+    assert all(effect == 0.0 for effect in result.marginal_effect.values())

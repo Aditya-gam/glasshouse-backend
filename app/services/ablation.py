@@ -129,16 +129,25 @@ async def find_minimal_set(
         confidence = best.confidence
         recovered = best.finding.value_recovered
 
+    if recovered:
+        # the search never broke recovery (the signal is spread beyond the ablated items, or the
+        # probe cap was hit): the greedily-removed items are NOT an actionable set — editing them
+        # wouldn't fix the leak — so report the honest "couldn't localize a cause", not a bogus
+        # target (attribution-ablation.md §6; never a false sense of safety).
+        if probes >= max_probes:
+            logger.warning("ablation hit the probe cap (%d) before breaking recovery", max_probes)
+        return AblationResult(
+            minimal_set=[],
+            marginal_effect=dict.fromkeys(items, 0.0),
+            sufficient=False,
+            probes=probes,
+        )
+
     minimal_set = await _prune(
         probe, removed, set(items), marginal_effect, budget=lambda: probes < max_probes
     )
-    if probes >= max_probes and recovered:
-        logger.warning("ablation hit the probe cap (%d) before breaking recovery", max_probes)
     return AblationResult(
-        minimal_set=minimal_set,
-        marginal_effect=marginal_effect,
-        sufficient=not recovered,
-        probes=probes,
+        minimal_set=minimal_set, marginal_effect=marginal_effect, sufficient=True, probes=probes
     )
 
 
