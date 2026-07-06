@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.services.consent import ConsentRequiredError
+from app.services.consent import ConsentRequiredError, DecoyNotConfirmedError
 
 _PROBLEM_BASE = "https://glasshouse.app/problems"
 _MEDIA_TYPE = "application/problem+json"
@@ -99,9 +99,21 @@ async def _consent_handler(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def _decoy_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A decoy edit was requested without the per-use confirm → 403 (fail closed; never auto-inject)."""  # noqa: E501
+    return _problem(
+        status_code=status.HTTP_403_FORBIDDEN,
+        title="Decoy confirmation required",
+        problem_type=f"{_PROBLEM_BASE}/decoy-unconfirmed",
+        detail=str(exc),  # a fixed message — never PII
+        instance=request.url.path,
+    )
+
+
 def register_error_handlers(app: FastAPI) -> None:
     """Wire the problem+json handlers onto the app."""
     app.add_exception_handler(DomainError, _domain_handler)
     app.add_exception_handler(ConsentRequiredError, _consent_handler)
+    app.add_exception_handler(DecoyNotConfirmedError, _decoy_handler)
     app.add_exception_handler(StarletteHTTPException, _http_handler)
     app.add_exception_handler(RequestValidationError, _validation_handler)

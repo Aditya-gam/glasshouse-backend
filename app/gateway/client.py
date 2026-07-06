@@ -17,10 +17,12 @@ from app.domain.output_schema import RawAttributeGuess, RawProfilerOutput
 from app.gateway.prompts import (
     ANONYMIZE_SYSTEM,
     ATTACK_TEXT_SYSTEM,
+    DECOY_SYSTEM,
     JUDGE_OCCUPATION_SYSTEM,
     MATCH_JUDGE_SYSTEM,
     UTILITY_JUDGE_SYSTEMS,
     build_anonymize_prompt,
+    build_decoy_prompt,
     build_utility_prompt,
 )
 from app.gateway.slots import Slot
@@ -46,6 +48,15 @@ class AnonymizerEdit(BaseModel):
     reasoning: str
     operation: EditOperation
     edited_text: str
+    note: str  # a short user-facing description of what changed
+
+
+class DecoyEdit(BaseModel):
+    """The decoy emission (decoy_text_v1, opt-in): a plausible FALSE cue injected (IncogniText)."""
+
+    reasoning: str
+    edited_text: str
+    decoy_value: str  # the plausible-but-false value the adversary is now steered toward
     note: str  # a short user-facing description of what changed
 
 
@@ -200,6 +211,31 @@ class GatewayClient:
                 {
                     "role": "user",
                     "content": build_anonymize_prompt(text, spans, attribute, feedback),
+                },
+            ],
+        )
+        return result
+
+    async def decoy(
+        self, *, text: str, spans: list[str], attribute: str, decoy_value: str | None = None
+    ) -> DecoyEdit:
+        """One decoy edit through the `anonymizer` (editor) slot (`decoy_text_v1`, opt-in M3.6).
+
+        Injects a plausible FALSE cue so the adversary confidently infers the wrong value
+        (IncogniText). The double gate (services.consent.require_decoy: standing consent + per-use
+        confirm) MUST pass before this runs — a decoy is never auto-injected. The editor slot is
+        separate from the proving adversary (the separation chain). Content never logged.
+        """
+        result: DecoyEdit = await self._client.chat.completions.create(
+            model="anonymizer",
+            response_model=DecoyEdit,
+            max_retries=self._settings.gateway_max_retries,
+            temperature=0.3,  # latitude to plant a believable cue; still low
+            messages=[
+                {"role": "system", "content": DECOY_SYSTEM},
+                {
+                    "role": "user",
+                    "content": build_decoy_prompt(text, spans, attribute, decoy_value),
                 },
             ],
         )
