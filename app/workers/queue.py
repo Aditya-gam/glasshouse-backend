@@ -2,7 +2,7 @@
 
 `arq app.workers.queue.WorkerSettings` (CLAUDE.md) runs the stage workers over Redis. Enqueue is
 idempotent via the arq `_job_id` (set to the run id); status transitions + retries-with-backoff are
-arq's, the dead-letter is its terminal-failure list. Only `attack` runs before M3.
+arq's, the dead-letter is its terminal-failure list. `attack` (M1) and `remediation` (M3.7) run.
 """
 
 from arq import create_pool
@@ -10,6 +10,7 @@ from arq.connections import ArqRedis, RedisSettings
 
 from app.core.config import get_redis_settings
 from app.workers.attack import attack_run
+from app.workers.remediation import remediation_run
 
 
 def _redis_settings() -> RedisSettings:
@@ -24,6 +25,6 @@ async def create_arq_pool() -> ArqRedis:
 class WorkerSettings:
     """arq worker entrypoint — each function is a thin wrapper that calls its service."""
 
-    functions = [attack_run]
+    functions = [attack_run, remediation_run]
     redis_settings = _redis_settings()
     max_tries = 3  # retries-with-backoff, then dead-letter (run-lifecycle.md)

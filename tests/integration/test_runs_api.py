@@ -24,7 +24,7 @@ from app.api.errors import NotFound
 from app.api.v1.runs import cancel_run
 from app.core.config import get_database_settings
 from app.db.rls import set_rls_context
-from app.gateway.prompts import ENGINE_VERSION
+from app.gateway.prompts import ADVERSARY_VERSION, ENGINE_VERSION
 from app.main import app
 from app.repositories.profiles import get_or_create_self_profile
 from app.repositories.runs import insert_run_v2
@@ -110,6 +110,76 @@ async def _seed_user(engine: AsyncEngine, *, consented: bool) -> uuid.UUID:
 
 
 _ATTACK = {"type": "attack", "params": {}}
+
+
+async def _seed_inference_for(app_engine: AsyncEngine, user_id: uuid.UUID) -> uuid.UUID:
+    """Persist a minimal location inference for `user_id`; returns its id (a remediation target)."""
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user_id)
+        profile_id = await get_or_create_self_profile(conn, user_id)
+        run_id = await insert_run_v2(
+            conn, profile_id, run_type="attack", status="succeeded", engine_version=ENGINE_VERSION
+        )
+        inference_id: uuid.UUID = (
+            await conn.execute(
+                text(
+                    "INSERT INTO inferences (run_id, profile_id, attribute_code, modality, status, "
+                    "engine_version, reasoning_reveals_art9) "
+                    "VALUES (:r, :p, 'location', 'text', 'inferred', :ev, false) RETURNING id"
+                ),
+                {"r": run_id, "p": profile_id, "ev": ENGINE_VERSION},
+            )
+        ).scalar_one()
+        return inference_id
+
+
+async def test_remediation_enqueue_scopes_to_target_and_enqueues(
+    client: AsyncClient, owner_engine: AsyncEngine, app_engine: AsyncEngine, pool: _FakePool
+) -> None:
+    user = await _seed_user(owner_engine, consented=True)
+    inference_id = await _seed_inference_for(app_engine, user)
+    body = {"type": "remediation", "params": {"inference_id": str(inference_id)}}
+
+    resp = await client.post("/v1/runs", json=body, headers={"X-Dev-User-Id": str(user)})
+
+    assert resp.status_code == 202
+    run_id = resp.json()["run_id"]
+    assert pool.jobs == [
+        ("remediation_run", (run_id, str(user), str(inference_id)), f"remediation:{run_id}")
+    ]
+    async with owner_engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT type, engine_version FROM runs WHERE id = :r"), {"r": run_id}
+            )
+        ).one()
+    assert row[0] == "remediation" and row[1] == ADVERSARY_VERSION  # proof pins adversary engine
+
+
+async def test_remediation_foreign_inference_is_404(
+    client: AsyncClient, owner_engine: AsyncEngine, app_engine: AsyncEngine, pool: _FakePool
+) -> None:
+    user_a = await _seed_user(owner_engine, consented=True)
+    user_b = await _seed_user(owner_engine, consented=True)
+    inference_id = await _seed_inference_for(app_engine, user_a)  # A's inference
+    body = {"type": "remediation", "params": {"inference_id": str(inference_id)}}
+
+    resp = await client.post("/v1/runs", json=body, headers={"X-Dev-User-Id": str(user_b)})
+
+    assert resp.status_code == 404  # B can't target A's inference — RLS-hidden, no IDOR signal
+    assert pool.jobs == []  # nothing enqueued
+
+
+async def test_remediation_missing_inference_id_is_422(
+    client: AsyncClient, owner_engine: AsyncEngine, pool: _FakePool
+) -> None:
+    user = await _seed_user(owner_engine, consented=True)
+    body = {"type": "remediation", "params": {}}  # no inference_id
+
+    resp = await client.post("/v1/runs", json=body, headers={"X-Dev-User-Id": str(user)})
+
+    assert resp.status_code == 422  # the params fail validation at the boundary
+    assert pool.jobs == []
 
 
 async def test_post_creates_queued_run_and_enqueues(

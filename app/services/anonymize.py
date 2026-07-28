@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.domain.eval_match import render_value
-from app.domain.output_schema import AttributeCode
-from app.gateway.client import AnonymizerEdit, EditOperation
+from app.domain.output_schema import AttributeCode, EditOperation
+from app.gateway.client import AnonymizerEdit
 from app.services.adversary import AdversaryFinding, attack_content
 from app.services.geocoding import Geocoder
 from app.services.inference import ProfileFn

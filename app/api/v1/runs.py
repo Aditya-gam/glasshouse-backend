@@ -12,7 +12,9 @@ from uuid import UUID
 
 from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.api.deps import (
@@ -22,9 +24,10 @@ from app.api.deps import (
     get_scoped_session,
 )
 from app.api.errors import NotFound, NotImplementedYet
-from app.api.v1.schemas import RunAccepted, RunCreate, RunStatus
+from app.api.v1.schemas import RemediationParams, RunAccepted, RunCreate, RunStatus
 from app.db.rls import set_rls_context
-from app.gateway.prompts import ENGINE_VERSION
+from app.gateway.prompts import ADVERSARY_VERSION, ENGINE_VERSION
+from app.repositories import inferences as inferences_repo
 from app.repositories import profiles as profiles_repo
 from app.repositories import runs as runs_repo
 from app.services.consent import require_consent
@@ -44,19 +47,21 @@ async def create_run(
     pool: Annotated[ArqRedis, Depends(get_arq_pool)],
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> RunAccepted:
-    """Create an attack run and enqueue it; return 202 + run_id (poll `GET /runs/{id}` or the SSE).
+    """Create a run and enqueue it; return 202 + run_id (poll `GET /runs/{id}` or the SSE).
 
-    **Consent-gated** (fail closed). The run infers all 8 attributes jointly (M1.7+); `params` is
-    reserved. A repeated `Idempotency-Key` returns the original run without re-enqueuing.
-    `eval`/`remediation` arrive with M2/M3.
+    **Consent-gated** (fail closed). `attack` infers all 8 attributes jointly (M1.7+); `remediation`
+    (M3.7) proves an advise-only edit for one inference named in `params.inference_id`. A repeated
+    `Idempotency-Key` returns the original run without re-enqueuing. `eval` arrives with its stage.
     """
-    if body.type != "attack":
-        raise NotImplementedYet(f"run type '{body.type}' lands with its engine milestone")
+    if body.type == "eval":
+        raise NotImplementedYet("run type 'eval' lands with its engine milestone")
     await require_consent(conn, "self_audit")  # no run without a valid, non-revoked consent
     if idempotency_key is not None:
         existing = await runs_repo.get_run_by_idempotency_key(conn, idempotency_key)
         if existing is not None:
             return RunAccepted(run_id=existing.id, status=existing.status)
+    if body.type == "remediation":
+        return await _create_remediation_run(body, conn, user_id, pool, idempotency_key)
     profile_id = await profiles_repo.get_or_create_self_profile(conn, user_id)
     run_id = await runs_repo.insert_run_v2(
         conn,
@@ -68,6 +73,44 @@ async def create_run(
     )
     # _job_id = the run id → arq dedupes a double-enqueue; the worker runs after this commits.
     await pool.enqueue_job("attack_run", str(run_id), str(user_id), _job_id=f"attack:{run_id}")
+    return RunAccepted(run_id=run_id, status="queued")
+
+
+async def _create_remediation_run(
+    body: RunCreate,
+    conn: AsyncConnection,
+    user_id: UUID,
+    pool: ArqRedis,
+    idempotency_key: str | None,
+) -> RunAccepted:
+    """Create + enqueue a remediation run for `params.inference_id` (consent-gated + deduped above).
+
+    The run is scoped to the *target inference's* profile so its `remediations` insert passes RLS; a
+    missing/RLS-hidden inference is a 404 (no IDOR existence signal). The worker re-checks consent.
+    """
+    try:
+        params = RemediationParams.model_validate(body.params)
+    except ValidationError as exc:
+        # surface a missing/invalid inference_id as the standard 422 (not a 500).
+        raise RequestValidationError(exc.errors()) from exc
+    profile_id = await inferences_repo.get_inference_profile(conn, params.inference_id)
+    if profile_id is None:
+        raise NotFound("inference not found")
+    run_id = await runs_repo.insert_run_v2(
+        conn,
+        profile_id,
+        run_type="remediation",
+        status="queued",
+        engine_version=ADVERSARY_VERSION,  # the proof pins the held-out adversary engine
+        idempotency_key=idempotency_key,
+    )
+    await pool.enqueue_job(
+        "remediation_run",
+        str(run_id),
+        str(user_id),
+        str(params.inference_id),
+        _job_id=f"remediation:{run_id}",
+    )
     return RunAccepted(run_id=run_id, status="queued")
 
 

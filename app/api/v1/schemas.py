@@ -57,6 +57,16 @@ class RunCreate(ApiModel):
     params: dict[str, object] = {}
 
 
+class RemediationParams(ApiModel):
+    """`RunCreate.params` for `type="remediation"` — the inference to defend (M3.7).
+
+    Parsed from the free-form `params` in the handler (not a top-level body), so `inference_id` is
+    validated as a UUID and a missing/invalid value fails as 422 at the boundary.
+    """
+
+    inference_id: UUID
+
+
 class RunAccepted(ApiModel):
     """202 response — the client polls GET /v1/runs/{id} until terminal."""
 
