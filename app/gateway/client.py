@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from app.core.config import GatewaySettings, get_gateway_settings
-from app.domain.output_schema import RawAttributeGuess, RawProfilerOutput
+from app.domain.output_schema import EditOperation, RawAttributeGuess, RawProfilerOutput
 from app.gateway.prompts import (
     ANONYMIZE_SYSTEM,
     ATTACK_TEXT_SYSTEM,
@@ -29,7 +29,6 @@ from app.gateway.slots import Slot
 
 MatchVerdictLabel = Literal["yes", "partial", "no"]
 GeoLevel = Literal["country", "region", "city", "neighborhood"]
-EditOperation = Literal["generalize", "remove_span", "remove_item"]
 UtilityGrade = Literal["fully", "mostly", "partially", "lost"]
 UtilityCriterion = Literal["meaning", "readability"]
 

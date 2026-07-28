@@ -3808,7 +3808,7 @@
         ]
       },
       "post": {
-        "description": "Create an attack run and enqueue it; return 202 + run_id (poll `GET /runs/{id}` or the SSE).\n\n**Consent-gated** (fail closed). The run infers all 8 attributes jointly (M1.7+); `params` is\nreserved. A repeated `Idempotency-Key` returns the original run without re-enqueuing.\n`eval`/`remediation` arrive with M2/M3.",
+        "description": "Create a run and enqueue it; return 202 + run_id (poll `GET /runs/{id}` or the SSE).\n\n**Consent-gated** (fail closed). `attack` infers all 8 attributes jointly (M1.7+); `remediation`\n(M3.7) proves an advise-only edit for one inference named in `params.inference_id`. A repeated\n`Idempotency-Key` returns the original run without re-enqueuing. `eval` arrives with its stage.",
         "operationId": "create_run_v1_runs_post",
         "parameters": [
           {

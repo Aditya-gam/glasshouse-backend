@@ -85,3 +85,27 @@ async def get_calibrated_reliability(
         return None
     reliability: Decimal = row[0]
     return reliability
+
+
+async def get_noise_std(
+    conn: AsyncConnection, *, engine_version: str, attribute_code: str, modality: str = "text"
+) -> Decimal | None:
+    """The adversary's run-to-run noise std for an attribute (the remediation noise floor, M3.7).
+
+    Averaged across confidence buckets for the (engine, attribute, modality); NULL until the Job-1
+    noise model is estimated — the caller then falls back to a provisional margin. Non-null only if
+    at least one bucket has a measured `noise_std`.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT avg(noise_std) FROM calibration "
+            "WHERE engine_version = :ev AND attribute_code = :attr AND modality = :modality "
+            "AND noise_std IS NOT NULL"
+        ),
+        {"ev": engine_version, "attr": attribute_code, "modality": modality},
+    )
+    row = result.first()
+    if row is None or row[0] is None:
+        return None
+    noise_std: Decimal = row[0]
+    return noise_std

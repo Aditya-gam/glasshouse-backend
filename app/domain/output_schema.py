@@ -21,6 +21,9 @@ AttributeCode = Literal[
 ]
 ValueType = Literal["numeric", "categorical", "geo_hier", "freetext_semantic"]
 Modality = Literal["text", "image", "multimodal"]
+# The localized edit a remediation applies (defend). A domain concept — the gateway emission and the
+# remediation persistence both reference it, so it lives here in the pure core (dependency rule).
+EditOperation = Literal["generalize", "remove_span", "remove_item"]
 
 # attribute → its canonical value_type (the §10 validator map; the DB attributes table is source).
 _VALUE_TYPE: dict[AttributeCode, ValueType] = {

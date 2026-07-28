@@ -126,6 +126,62 @@ async def insert_evidence(
     )
 
 
+# --- remediation target (M3.7): the attribute + profile + top-1 value being defended -----------
+
+
+@dataclass(frozen=True)
+class InferenceTarget:
+    """What a remediation run defends: the inference's attribute, its profile, its top-1 value.
+
+    `value` is the canonical top-1 guess (decrypted) — the value the adversary recovered and the
+    user wants to break; None when the inference abstained (nothing to remediate).
+    """
+
+    attribute_code: str
+    profile_id: UUID
+    value: dict[str, Any] | None
+
+
+async def get_inference_profile(conn: AsyncConnection, inference_id: UUID) -> UUID | None:
+    """The inference's profile id (RLS-scoped), or None if absent/hidden — no decryption needed.
+
+    Lets the enqueue endpoint scope the remediation run to the target's profile without touching the
+    master key (that stays a worker concern).
+    """
+    result = await conn.execute(
+        text("SELECT profile_id FROM inferences WHERE id = :inf"), {"inf": inference_id}
+    )
+    row = result.first()
+    return None if row is None else row[0]
+
+
+async def get_inference_target(
+    conn: AsyncConnection, inference_id: UUID, master_key: str
+) -> InferenceTarget | None:
+    """The target inference's attribute + profile + decrypted top-1 value, or None if absent/hidden.
+
+    RLS-scoped: another user's inference (or a missing id) returns None so the worker fails closed.
+    The Art. 9 value is decrypted in-query with the caller's DEK, so plaintext never leaves the DB.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT i.attribute_code, i.profile_id, "
+            "  CASE WHEN c.value IS NOT NULL THEN c.value "
+            "       WHEN c.value_ct IS NOT NULL "
+            "         THEN decrypt_field(app_user_id(), c.value_ct, :mk)::jsonb "
+            "       ELSE NULL END AS value "
+            "FROM inferences i "
+            "LEFT JOIN inference_candidates c ON c.inference_id = i.id AND c.rank = 1 "
+            "WHERE i.id = :inf"
+        ),
+        {"mk": master_key, "inf": inference_id},
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return InferenceTarget(attribute_code=row[0], profile_id=row[1], value=row[2])
+
+
 # --- dashboard read (M2.5b): one card per attribute, top-1 candidate + calibrated reliability --
 
 
