@@ -518,6 +518,17 @@
             ],
             "title": "Decoy"
           },
+          "edited": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edited"
+          },
           "exif": {
             "anyOf": [
               {
@@ -3473,6 +3484,7 @@
     },
     "/v1/remediations": {
       "get": {
+        "description": "The frontier(s) for `inference_id`, newest first; a `cant_break` result when none localized.\n\nWithout `inference_id` the list is empty for now (a global cursor list lands with M5.2). RLS\nhides another user's inferences, so a foreign id yields an empty list (no IDOR signal).",
         "operationId": "list_remediations_v1_remediations_get",
         "parameters": [
           {
@@ -3594,7 +3606,7 @@
     },
     "/v1/remediations/{remediation_id}": {
       "get": {
-        "description": "The proven before/after (intervals, value-recovery, significant) + frontier options.",
+        "description": "One remediation run's proven frontier (`remediation_id` = the run id). 404 if absent.",
         "operationId": "get_remediation_v1_remediations__remediation_id__get",
         "parameters": [
           {
