@@ -16,6 +16,7 @@ from app.db import crypto
 from app.db.rls import set_rls_context
 from app.db.session import app_engine
 from app.gateway.client import GatewayClient
+from app.repositories import consents as consents_repo
 from app.repositories import runs as runs_repo
 from app.retrieval.embedder import default_embedder
 from app.retrieval.pii import default_pii_detector
@@ -32,7 +33,11 @@ logger = logging.getLogger(__name__)
 
 
 async def remediation_run(
-    ctx: dict[Any, Any], run_id: str, owner_user_id: str, inference_id: str
+    ctx: dict[Any, Any],
+    run_id: str,
+    owner_user_id: str,
+    inference_id: str,
+    decoy: bool = False,
 ) -> None:
     """Execute a queued remediation run; `ctx` is arq's job context. No content/secrets logged."""
     run_uuid, owner_uuid, inference_uuid = UUID(run_id), UUID(owner_user_id), UUID(inference_id)
@@ -47,6 +52,10 @@ async def remediation_run(
                     return  # canceled before pickup (or gone) — honor it, do nothing
                 await require_consent(conn, "self_audit")  # revocation is immediate → re-check here
                 allow_art9 = await has_special_category_consent(conn)
+                if decoy and not await consents_repo.has_active_consent(conn, "decoy"):
+                    # decoy consent revoked between enqueue and execution → truthful options only.
+                    logger.info("remediation %s: decoy consent absent — truthful only", run_id)
+                    decoy = False
                 await execute_remediation_run(
                     conn,
                     run_uuid,
@@ -58,6 +67,7 @@ async def remediation_run(
                     master_key=master_key,
                     target_inference_id=inference_uuid,
                     allow_special_category=allow_art9,
+                    decoy_requested=decoy,
                     judge=GatewayOccupationJudge(gateway),
                 )
         except ConsentRequiredError:

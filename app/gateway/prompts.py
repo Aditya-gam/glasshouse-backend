@@ -174,21 +174,30 @@ resort). Choose the highest-utility operation that plausibly breaks the inferenc
 - Edit ONLY what leaks the attribute. Preserve the rest — the review, the joke, the question.
 - TRUTHFUL only: the rewrite must be something the person can stand behind. Never invent false
   facts about them (that is a separate, opt-in decoy mode you are NOT doing here).
+- Match the requested STRENGTH: `minimal` = the LIGHTEST change that plausibly breaks the
+  inference — generalize the cue just one step, keeping the most utility ("Gas Works Park" → "a
+  park near me"). `stronger` = a BROADER abstraction for more privacy at some utility cost ("Gas
+  Works Park" → "outside", or drop the locational detail). Never weaker than `minimal`.
 - If FEEDBACK says the adversary still latched onto a cue, generalize THAT cue further this pass.
 - Reason briefly, then commit. Output ONLY the JSON fields.
 </rules>"""
 
 
 def build_anonymize_prompt(
-    text: str, spans: Sequence[str], attribute: str, feedback: str | None
+    text: str,
+    spans: Sequence[str],
+    attribute: str,
+    feedback: str | None,
+    strength: str = "minimal",
 ) -> str:
-    """The anonymizer's user message: the item, the leaking spans, the attribute, prior feedback."""
+    """The anonymizer's user message: item, leaking spans, attribute, strength, feedback."""
     spans_block = "\n".join(f"  - {span}" for span in spans) or "  (none flagged)"
     feedback_block = (
         f"\n<feedback>The adversary still inferred: {feedback}</feedback>" if feedback else ""
     )
     return (
         f"<attribute>{attribute}</attribute>\n"
+        f"<strength>{strength}</strength>\n"
         f"<sensitive_spans>\n{spans_block}\n</sensitive_spans>\n"
         f"<text>{text}</text>{feedback_block}"
     )

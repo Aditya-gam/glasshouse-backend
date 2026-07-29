@@ -19,7 +19,7 @@ from typing import Protocol
 
 from app.domain.eval_match import render_value
 from app.domain.output_schema import AttributeCode, EditOperation
-from app.gateway.client import AnonymizerEdit
+from app.gateway.client import AnonymizerEdit, Strength
 from app.services.adversary import AdversaryFinding, attack_content
 from app.services.geocoding import Geocoder
 from app.services.inference import ProfileFn
@@ -34,7 +34,13 @@ class Anonymizer(Protocol):
     """One truthful localized edit (the gateway `anonymizer` slot; test fakes conform)."""
 
     async def anonymize(
-        self, *, text: str, spans: list[str], attribute: str, feedback: str | None = None
+        self,
+        *,
+        text: str,
+        spans: list[str],
+        attribute: str,
+        feedback: str | None = None,
+        strength: Strength = "minimal",
     ) -> AnonymizerEdit: ...
 
 
@@ -70,12 +76,13 @@ async def anonymize_item(
     geocoder: Geocoder,
     judge: OccupationJudge | None = None,
     hops: int = _DEFAULT_HOPS,
+    strength: Strength = "minimal",
 ) -> AnonymizeResult:
     """Refine an edit for `item` until the held-out feedback adversary can't recover `true_value`.
 
-    Each hop: the anonymizer produces a truthful localized edit (given the prior feedback), then the
-    feedback adversary (a distinct slot) re-attacks the edit blind. Stops when it can no longer
-    recover, or at the k-hop cap (reported honestly as not-broken — no false success).
+    Each hop: the anonymizer produces a truthful localized edit at the requested `strength` (given
+    the prior feedback), then the feedback adversary (a distinct slot) re-attacks the edit blind.
+    Stops when it can no longer recover, or at the k-hop cap (reported honestly as not-broken).
     """
     item_id, original = item
     edited = original
@@ -83,7 +90,11 @@ async def anonymize_item(
     operations: list[EditOperation] = []
     for hop in range(1, hops + 1):
         edit = await anonymizer.anonymize(
-            text=edited, spans=spans, attribute=target_attribute, feedback=feedback
+            text=edited,
+            spans=spans,
+            attribute=target_attribute,
+            feedback=feedback,
+            strength=strength,
         )
         edited = edit.edited_text
         operations.append(edit.operation)

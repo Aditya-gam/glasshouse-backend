@@ -33,6 +33,7 @@ from app.domain.output_schema import (
 )
 from app.domain.remediation import classify_action, majority_recovered, span_change
 from app.domain.significance import Interval, RemediationDelta, assess_remediation
+from app.gateway.client import Strength
 from app.gateway.prompts import ADVERSARY_VERSION
 from app.repositories import calibration as calibration_repo
 from app.repositories import inferences as inferences_repo
@@ -42,10 +43,11 @@ from app.repositories import runs as runs_repo
 from app.retrieval.embedder import Embedder
 from app.retrieval.pii import PiiDetector
 from app.retrieval.retriever import retrieve_evidence
-from app.services.ablation import find_minimal_set
+from app.services.ablation import AblationResult, find_minimal_set
 from app.services.adversary import Adversary, AdversaryFinding, adversary_attack
 from app.services.anonymize import Anonymizer, AnonymizeResult, anonymize_item
 from app.services.consent import ConsentRequiredError
+from app.services.decoy import DecoyEditor, generate_decoy
 from app.services.geocoding import Geocoder
 from app.services.inference import ProfileFn
 from app.services.occupation import OccupationJudge
@@ -53,6 +55,7 @@ from app.services.utility import UtilityAssessment, UtilityJudge, assess_utility
 
 logger = logging.getLogger(__name__)
 
+_STRENGTHS: tuple[Strength, ...] = ("minimal", "stronger")  # the two truthful-rewrite tiers
 _DEFAULT_SAMPLES = 5  # N paired re-attacks per endpoint for the bootstrap (noise-floor doc §N≈5)
 # Provisional noise-floor margin used until the Job-1 noise model is estimated (noise_std is NULL):
 # a conservative confidence-drop the paired bootstrap CI must clear to call a drop significant.
@@ -62,12 +65,12 @@ _BOOTSTRAP_SEED = 0  # deterministic significance (reproducible per noise-floor-
 _ATTRIBUTE_VALUE_ADAPTER: TypeAdapter[AttributeValue] = TypeAdapter(AttributeValue)
 
 
-class RemediationGateway(Adversary, Anonymizer, UtilityJudge, Protocol):
+class RemediationGateway(Adversary, Anonymizer, UtilityJudge, DecoyEditor, Protocol):
     """Every model slot the worker needs (GatewayClient conforms; test fakes conform).
 
-    The evaluator adversary (`adversary_profile_all`), the anonymizer (`anonymize`), and the utility
-    judge (`judge_utility`) come from the composed protocols; the anonymizer loop's held-out
-    feedback adversary is the one extra method below (a distinct slot from the evaluator).
+    The evaluator adversary (`adversary_profile_all`), the anonymizer (`anonymize`), the utility
+    judge (`judge_utility`), and the decoy editor (`decoy`) come from the composed protocols; the
+    anonymizer loop's held-out feedback adversary is the one extra method below (a distinct slot).
     """
 
     async def feedback_profile_all(
@@ -77,15 +80,18 @@ class RemediationGateway(Adversary, Anonymizer, UtilityJudge, Protocol):
 
 @dataclass(frozen=True)
 class RemediationOutcome:
-    """The proven, advise-only remediation to persist (one row); None when nothing to suggest."""
+    """One proven, advise-only frontier option to persist (one row)."""
 
-    action: str  # rewrite | remove
+    option_key: str  # minimal | stronger | remove | decoy — the frontier position
+    action: str  # rewrite | remove | decoy
     primary_edited_text: str | None  # the load-bearing item's rewrite (None when it was removed)
     span_changes: list[dict[str, Any]]  # per-item localized edits (JSONB)
     delta: RemediationDelta  # before/after intervals + significant + value-recovery flip
     recovered_before: bool
     recovered_after: bool
     utility: UtilityAssessment
+    is_decoy: bool
+    misled_value: str | None  # decoy only: the plausible-but-false value now implied
     evaluator_engine_version: str
 
 
@@ -140,7 +146,192 @@ async def _sample_endpoint(
     return confidences, recoveries
 
 
-async def plan_remediation(
+@dataclass(frozen=True)
+class _ProofContext:
+    """The shared before-endpoint measurement + params every frontier option proves against."""
+
+    adversary: Adversary
+    target_attribute: AttributeCode
+    true_value: str
+    before_conf: list[float]
+    recovered_before: bool
+    geocoder: Geocoder
+    judge: OccupationJudge | None
+    floor_margin: float
+    n_samples: int
+    seed: int
+
+
+_REMOVED_UTILITY = UtilityAssessment(
+    utility_score=0.0,
+    meaning="lost",
+    readability=None,
+    embedding_similarity=0.0,
+    passes_floor=False,
+)
+
+
+def _apply_edits(
+    content: Sequence[tuple[str, str]], edited_by_id: dict[str, str]
+) -> list[tuple[str, str]]:
+    """`content` with the named items replaced by their edited text (others untouched)."""
+    return [(item_id, edited_by_id.get(item_id, item_text)) for item_id, item_text in content]
+
+
+async def _prove(
+    ctx: _ProofContext, edited_content: Sequence[tuple[str, str]]
+) -> tuple[RemediationDelta, bool]:
+    """Re-attack `edited_content` N× and gate the drop vs the shared before-samples + floor."""
+    after_conf, after_rec = await _sample_endpoint(
+        ctx.adversary,
+        edited_content,
+        target_attribute=ctx.target_attribute,
+        true_value=ctx.true_value,
+        geocoder=ctx.geocoder,
+        judge=ctx.judge,
+        n_samples=ctx.n_samples,
+    )
+    recovered_after = majority_recovered(after_rec)
+    delta = assess_remediation(
+        ctx.before_conf,
+        after_conf,
+        recovered_before=ctx.recovered_before,
+        recovered_after=recovered_after,
+        floor_margin=ctx.floor_margin,
+        seed=ctx.seed,
+    )
+    return delta, recovered_after
+
+
+async def _rewrite_outcome(
+    ctx: _ProofContext,
+    strength: Strength,
+    ablation: AblationResult,
+    content: Sequence[tuple[str, str]],
+    text_by_id: dict[str, str],
+    primary_id: str,
+    anonymizer: Anonymizer,
+    feedback_profile_fn: ProfileFn,
+    utility_judge: UtilityJudge,
+    embedder: Embedder,
+) -> RemediationOutcome:
+    """A truthful generalization option at `strength` — every set item rewritten, then proven."""
+    edits: list[AnonymizeResult] = [
+        await anonymize_item(
+            anonymizer,
+            feedback_profile_fn,
+            (item_id, text_by_id[item_id]),
+            target_attribute=ctx.target_attribute,
+            true_value=ctx.true_value,
+            spans=[],  # v1: the anonymizer localizes from the attribute; evidence spans later
+            geocoder=ctx.geocoder,
+            judge=ctx.judge,
+            strength=strength,
+        )
+        for item_id in ablation.minimal_set
+    ]
+    delta, recovered_after = await _prove(
+        ctx, _apply_edits(content, {edit.item_id: edit.edited_text for edit in edits})
+    )
+    primary = next(edit for edit in edits if edit.item_id == primary_id)
+    primary_removed = primary.operations[-1] == "remove_item"
+    utility = await assess_utility(
+        utility_judge,
+        embedder,
+        original=text_by_id[primary_id],
+        edited=primary.edited_text,
+        sensitive_attribute=ctx.target_attribute,
+    )
+    span_changes = [
+        asdict(span_change(edit.item_id, edit.operations[-1], edit.edited_text)) for edit in edits
+    ]
+    return RemediationOutcome(
+        option_key=strength,
+        action=classify_action([edit.operations[-1] for edit in edits]),
+        primary_edited_text=None if primary_removed else primary.edited_text,
+        span_changes=span_changes,
+        delta=delta,
+        recovered_before=ctx.recovered_before,
+        recovered_after=recovered_after,
+        utility=utility,
+        is_decoy=False,
+        misled_value=None,
+        evaluator_engine_version=ADVERSARY_VERSION,
+    )
+
+
+async def _remove_outcome(
+    ctx: _ProofContext, ablation: AblationResult, content: Sequence[tuple[str, str]]
+) -> RemediationOutcome:
+    """The max-truthful-privacy option — drop the load-bearing items entirely, then prove."""
+    removed = {item_id: "" for item_id in ablation.minimal_set}
+    delta, recovered_after = await _prove(ctx, _apply_edits(content, removed))
+    span_changes = [
+        asdict(span_change(item_id, "remove_item", "")) for item_id in ablation.minimal_set
+    ]
+    return RemediationOutcome(
+        option_key="remove",
+        action="remove",
+        primary_edited_text=None,
+        span_changes=span_changes,
+        delta=delta,
+        recovered_before=ctx.recovered_before,
+        recovered_after=recovered_after,
+        utility=_REMOVED_UTILITY,  # removal keeps no utility by definition
+        is_decoy=False,
+        misled_value=None,
+        evaluator_engine_version=ADVERSARY_VERSION,
+    )
+
+
+async def _decoy_outcome(
+    ctx: _ProofContext,
+    decoy_editor: DecoyEditor,
+    content: Sequence[tuple[str, str]],
+    text_by_id: dict[str, str],
+    primary_id: str,
+    utility_judge: UtilityJudge,
+    embedder: Embedder,
+) -> RemediationOutcome:
+    """The opt-in decoy option — inject a plausible FALSE cue on the load-bearing item, then prove.
+
+    The double consent gate (services.consent.require_decoy) has already passed for this run, so the
+    engine's per-use confirm is satisfied. The proof honestly reports whether the adversary is now
+    misled — a multi-item leak may still recover the true value (no false safety).
+    """
+    result = await generate_decoy(
+        decoy_editor,
+        (primary_id, text_by_id[primary_id]),
+        target_attribute=ctx.target_attribute,
+        spans=[],
+        confirmed=True,
+    )
+    edited = _apply_edits(content, {primary_id: result.edited_text})
+    delta, recovered_after = await _prove(ctx, edited)
+    utility = await assess_utility(
+        utility_judge,
+        embedder,
+        original=text_by_id[primary_id],
+        edited=result.edited_text,
+        sensitive_attribute=ctx.target_attribute,
+    )
+    span_changes = [{"item_id": primary_id, "op": "generalize", "replacement": result.edited_text}]
+    return RemediationOutcome(
+        option_key="decoy",
+        action="decoy",
+        primary_edited_text=result.edited_text,
+        span_changes=span_changes,
+        delta=delta,
+        recovered_before=ctx.recovered_before,
+        recovered_after=recovered_after,
+        utility=utility,
+        is_decoy=True,
+        misled_value=result.decoy_value,
+        evaluator_engine_version=ADVERSARY_VERSION,
+    )
+
+
+async def plan_frontier(
     *,
     content: Sequence[tuple[str, str]],
     target_attribute: AttributeCode,
@@ -153,16 +344,18 @@ async def plan_remediation(
     geocoder: Geocoder,
     judge: OccupationJudge | None,
     floor_margin: float,
+    decoy_editor: DecoyEditor | None = None,
     n_samples: int = _DEFAULT_SAMPLES,
     seed: int = _BOOTSTRAP_SEED,
-) -> RemediationOutcome | None:
-    """Prove one remediation for `target_attribute` over `content`; None when nothing can be shown.
+) -> list[RemediationOutcome]:
+    """Prove the advise-only frontier for `target_attribute`: minimal, stronger, remove, [decoy].
 
-    Ablation finds the load-bearing set; if none is sufficient the leak isn't localizable — we
-    return None (the read layer reports this honestly as `cant_break`, no false success). Otherwise
-    every set item is truthfully rewritten, the edit is proven by re-attacking the original vs the
-    edited content N times each, gated by the noise floor. A row is returned even when the edit does
-    NOT break recovery (significant False / recovery still True) so the honest non-success is kept.
+    Ablation finds the load-bearing set; if none is sufficient the leak isn't localizable and the
+    frontier is empty (the read layer reports `cant_break`, no false success). Otherwise each
+    option's edit is proven by re-attacking the original vs the edited content N× — the before
+    samples are measured ONCE and shared across options — gated by the noise floor. Options that do
+    NOT break recovery are still returned (honest non-success, never dropped). A `decoy_editor` adds
+    the opt-in decoy option (the caller has already passed the consent gate).
     """
     ablation = await find_minimal_set(
         adversary,
@@ -174,29 +367,10 @@ async def plan_remediation(
     )
     if not ablation.sufficient or not ablation.minimal_set:
         logger.info("remediation: %s not localizable — no sufficient minimal set", target_attribute)
-        return None
+        return []
 
     text_by_id = dict(content)
-    edits: list[AnonymizeResult] = []
-    for item_id in ablation.minimal_set:
-        edits.append(
-            await anonymize_item(
-                anonymizer,
-                feedback_profile_fn,
-                (item_id, text_by_id[item_id]),
-                target_attribute=target_attribute,
-                true_value=true_value,
-                spans=[],  # v1: the anonymizer localizes from the attribute; evidence spans later
-                geocoder=geocoder,
-                judge=judge,
-            )
-        )
-    edited_by_id = {edit.item_id: edit for edit in edits}
-    edited_content = [
-        (item_id, edited_by_id[item_id].edited_text if item_id in edited_by_id else item_text)
-        for item_id, item_text in content
-    ]
-
+    primary_id = max(ablation.minimal_set, key=lambda i: ablation.marginal_effect.get(i, 0.0))
     before_conf, before_rec = await _sample_endpoint(
         adversary,
         content,
@@ -206,50 +380,41 @@ async def plan_remediation(
         judge=judge,
         n_samples=n_samples,
     )
-    after_conf, after_rec = await _sample_endpoint(
-        adversary,
-        edited_content,
+    ctx = _ProofContext(
+        adversary=adversary,
         target_attribute=target_attribute,
         true_value=true_value,
+        before_conf=before_conf,
+        recovered_before=majority_recovered(before_rec),
         geocoder=geocoder,
         judge=judge,
-        n_samples=n_samples,
-    )
-    recovered_before = majority_recovered(before_rec)
-    recovered_after = majority_recovered(after_rec)
-    delta = assess_remediation(
-        before_conf,
-        after_conf,
-        recovered_before=recovered_before,
-        recovered_after=recovered_after,
         floor_margin=floor_margin,
+        n_samples=n_samples,
         seed=seed,
     )
-
-    # the primary item (largest marginal effect) carries the displayed rewrite + utility score.
-    primary_id = max(ablation.minimal_set, key=lambda i: ablation.marginal_effect.get(i, 0.0))
-    primary = edited_by_id[primary_id]
-    primary_removed = primary.operations[-1] == "remove_item"
-    utility = await assess_utility(
-        utility_judge,
-        embedder,
-        original=text_by_id[primary_id],
-        edited=primary.edited_text,
-        sensitive_attribute=target_attribute,
-    )
-    span_changes = [
-        asdict(span_change(edit.item_id, edit.operations[-1], edit.edited_text)) for edit in edits
+    outcomes: list[RemediationOutcome] = [
+        await _rewrite_outcome(
+            ctx,
+            strength,
+            ablation,
+            content,
+            text_by_id,
+            primary_id,
+            anonymizer,
+            feedback_profile_fn,
+            utility_judge,
+            embedder,
+        )
+        for strength in _STRENGTHS
     ]
-    return RemediationOutcome(
-        action=classify_action([edit.operations[-1] for edit in edits]),
-        primary_edited_text=None if primary_removed else primary.edited_text,
-        span_changes=span_changes,
-        delta=delta,
-        recovered_before=recovered_before,
-        recovered_after=recovered_after,
-        utility=utility,
-        evaluator_engine_version=ADVERSARY_VERSION,
-    )
+    outcomes.append(await _remove_outcome(ctx, ablation, content))
+    if decoy_editor is not None:
+        outcomes.append(
+            await _decoy_outcome(
+                ctx, decoy_editor, content, text_by_id, primary_id, utility_judge, embedder
+            )
+        )
+    return outcomes
 
 
 async def resolve_floor_margin(conn: AsyncConnection, attribute_code: str) -> float:
@@ -294,14 +459,16 @@ async def execute_remediation_run(
     master_key: str,
     target_inference_id: UUID,
     allow_special_category: bool,
+    decoy_requested: bool = False,
     judge: OccupationJudge | None = None,
 ) -> None:
-    """Execute a pre-created remediation run: running → prove → persist `remediations` → succeeded.
+    """Execute a pre-created remediation run: running → prove the frontier → persist → succeeded.
 
     Fetches the targeted inference (its attribute + the top-1 value being defended), re-runs the
-    same evidence retrieval the attack used, proves the edit, and persists one advise-only row.
-    RLS-scoped; a target that is abstained, missing, or un-localizable succeeds with no row (honest,
-    no false safety). Remediating an Art. 9 attribute (birthplace) re-processes special-category
+    same evidence retrieval the attack used, proves the advise-only frontier (minimal / stronger /
+    remove, plus the opt-in decoy when `decoy_requested`), and persists one row per option.
+    RLS-scoped; a target that is abstained, missing, or un-localizable succeeds with no rows (no
+    false safety). Remediating an Art. 9 attribute (birthplace) re-processes special-category
     data, so it fails closed without `allow_special_category`. Content decrypted in memory, never
     logged.
     """
@@ -326,8 +493,8 @@ async def execute_remediation_run(
     )
     content = [(str(item.id), item.text) for item in items]
     floor_margin = await resolve_floor_margin(conn, target.attribute_code)
-    outcome = (
-        await plan_remediation(
+    outcomes = (
+        await plan_frontier(
             content=content,
             target_attribute=attribute,
             true_value=true_value,
@@ -341,11 +508,12 @@ async def execute_remediation_run(
             geocoder=geocoder,
             judge=judge,
             floor_margin=floor_margin,
+            decoy_editor=gateway if decoy_requested else None,
         )
         if content
-        else None
+        else []
     )
-    if outcome is not None:
+    for outcome in outcomes:
         await remediations_repo.insert_remediation(
             conn,
             profile_id=target.profile_id,
@@ -354,8 +522,10 @@ async def execute_remediation_run(
             owner_user_id=owner_user_id,
             master_key=master_key,
             action=outcome.action,
+            option_key=outcome.option_key,
             edited_text=outcome.primary_edited_text,
             span_changes=outcome.span_changes,
+            misled_value=outcome.misled_value,
             confidence_before=outcome.delta.before.point,
             confidence_after=outcome.delta.after.point,
             ci_before=_interval_dict(outcome.delta.before),
@@ -364,7 +534,7 @@ async def execute_remediation_run(
             value_recovery_before=outcome.recovered_before,
             value_recovery_after=outcome.recovered_after,
             utility_score=_utility_dict(outcome.utility),
-            is_decoy=False,
+            is_decoy=outcome.is_decoy,
             evaluator_engine_version=outcome.evaluator_engine_version,
         )
     latency_ms = int((time.monotonic() - started) * 1000)

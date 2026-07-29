@@ -20,7 +20,13 @@ class _GeneralizingAnonymizer:
         self.feedback_seen: list[str | None] = []
 
     async def anonymize(
-        self, *, text: str, spans: list[str], attribute: str, feedback: str | None = None
+        self,
+        *,
+        text: str,
+        spans: list[str],
+        attribute: str,
+        feedback: str | None = None,
+        strength: str = "minimal",
     ) -> AnonymizerEdit:
         self.feedback_seen.append(feedback)
         edited = text
@@ -37,7 +43,13 @@ class _StubbornAnonymizer:
     """Never actually removes the cue — used to exercise the k-hop cap / not-broken path."""
 
     async def anonymize(
-        self, *, text: str, spans: list[str], attribute: str, feedback: str | None = None
+        self,
+        *,
+        text: str,
+        spans: list[str],
+        attribute: str,
+        feedback: str | None = None,
+        strength: str = "minimal",
     ) -> AnonymizerEdit:
         return AnonymizerEdit(
             reasoning="tried", operation="generalize", edited_text=text, note="unchanged"

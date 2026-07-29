@@ -145,7 +145,7 @@ async def test_remediation_enqueue_scopes_to_target_and_enqueues(
     assert resp.status_code == 202
     run_id = resp.json()["run_id"]
     assert pool.jobs == [
-        ("remediation_run", (run_id, str(user), str(inference_id)), f"remediation:{run_id}")
+        ("remediation_run", (run_id, str(user), str(inference_id), False), f"remediation:{run_id}")
     ]
     async with owner_engine.connect() as conn:
         row = (
@@ -180,6 +180,20 @@ async def test_remediation_missing_inference_id_is_422(
 
     assert resp.status_code == 422  # the params fail validation at the boundary
     assert pool.jobs == []
+
+
+async def test_remediation_decoy_without_consent_is_forbidden(
+    client: AsyncClient, owner_engine: AsyncEngine, app_engine: AsyncEngine, pool: _FakePool
+) -> None:
+    # the decoy option publishes a falsehood — requesting it without standing decoy consent → 403.
+    user = await _seed_user(owner_engine, consented=True)  # self_audit only, no decoy consent
+    inference_id = await _seed_inference_for(app_engine, user)
+    body = {"type": "remediation", "params": {"inference_id": str(inference_id), "decoy": True}}
+
+    resp = await client.post("/v1/runs", json=body, headers={"X-Dev-User-Id": str(user)})
+
+    assert resp.status_code == 403  # fail closed on the deception gate
+    assert pool.jobs == []  # nothing enqueued
 
 
 async def test_post_creates_queued_run_and_enqueues(

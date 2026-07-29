@@ -30,7 +30,7 @@ from app.gateway.prompts import ADVERSARY_VERSION, ENGINE_VERSION
 from app.repositories import inferences as inferences_repo
 from app.repositories import profiles as profiles_repo
 from app.repositories import runs as runs_repo
-from app.services.consent import require_consent
+from app.services.consent import require_consent, require_decoy
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 
@@ -96,6 +96,9 @@ async def _create_remediation_run(
     profile_id = await inferences_repo.get_inference_profile(conn, params.inference_id)
     if profile_id is None:
         raise NotFound("inference not found")
+    if params.decoy:
+        # the decoy option publishes a falsehood — gate on standing consent + this per-use confirm.
+        await require_decoy(conn, confirmed=True)
     run_id = await runs_repo.insert_run_v2(
         conn,
         profile_id,
@@ -109,6 +112,7 @@ async def _create_remediation_run(
         str(run_id),
         str(user_id),
         str(params.inference_id),
+        params.decoy,
         _job_id=f"remediation:{run_id}",
     )
     return RunAccepted(run_id=run_id, status="queued")

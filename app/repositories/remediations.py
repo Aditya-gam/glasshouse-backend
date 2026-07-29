@@ -25,8 +25,10 @@ async def insert_remediation(
     owner_user_id: UUID,
     master_key: str,
     action: str,
+    option_key: str,
     edited_text: str | None,
     span_changes: list[dict[str, Any]],
+    misled_value: str | None,
     confidence_before: float,
     confidence_after: float,
     ci_before: Mapping[str, float],
@@ -47,15 +49,16 @@ async def insert_remediation(
     result = await conn.execute(
         text(
             "INSERT INTO remediations ("
-            "  profile_id, inference_id, run_id, action, edited_text_ct, span_changes, "
-            "  confidence_before, confidence_after, ci_before, ci_after, significant, "
-            "  value_recovery_before, value_recovery_after, utility_score, is_decoy, "
-            "  evaluator_engine_version"
+            "  profile_id, inference_id, run_id, action, option_key, edited_text_ct, "
+            "  span_changes, misled_value, confidence_before, confidence_after, ci_before, "
+            "  ci_after, significant, value_recovery_before, value_recovery_after, utility_score, "
+            "  is_decoy, evaluator_engine_version"
             ") VALUES ("
-            "  :profile_id, :inference_id, :run_id, :action, "
+            "  :profile_id, :inference_id, :run_id, :action, :option_key, "
             "  encrypt_field(:owner, :edited_text, :mk), CAST(:span_changes AS jsonb), "
-            "  :conf_before, :conf_after, CAST(:ci_before AS jsonb), CAST(:ci_after AS jsonb), "
-            "  :significant, :vr_before, :vr_after, CAST(:utility AS jsonb), :is_decoy, :ev"
+            "  :misled_value, :conf_before, :conf_after, CAST(:ci_before AS jsonb), "
+            "  CAST(:ci_after AS jsonb), :significant, :vr_before, :vr_after, "
+            "  CAST(:utility AS jsonb), :is_decoy, :ev"
             ") RETURNING id"
         ),
         {
@@ -63,10 +66,12 @@ async def insert_remediation(
             "inference_id": inference_id,
             "run_id": run_id,
             "action": action,
+            "option_key": option_key,
             "owner": owner_user_id,
             "edited_text": edited_text,
             "mk": master_key,
             "span_changes": json.dumps(span_changes),
+            "misled_value": misled_value,
             "conf_before": Decimal(str(confidence_before)),
             "conf_after": Decimal(str(confidence_after)),
             "ci_before": json.dumps(dict(ci_before)),

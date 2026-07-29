@@ -27,7 +27,7 @@ from app.domain.output_schema import (
     GeoHierValue,
     RawAttributeGuess,
 )
-from app.gateway.client import AnonymizerEdit, UtilityVerdict
+from app.gateway.client import AnonymizerEdit, DecoyEdit, UtilityVerdict
 from app.gateway.prompts import ADVERSARY_VERSION
 from app.repositories.calibration import upsert_calibration_bucket
 from app.repositories.inferences import insert_inference_v2
@@ -56,7 +56,13 @@ class _UnusedGateway:
         raise AssertionError("the feedback adversary must not run on an early-exit path")
 
     async def anonymize(
-        self, *, text: str, spans: list[str], attribute: str, feedback: str | None = None
+        self,
+        *,
+        text: str,
+        spans: list[str],
+        attribute: str,
+        feedback: str | None = None,
+        strength: str = "minimal",
     ) -> AnonymizerEdit:
         raise AssertionError("the anonymizer must not run on an early-exit path")
 
@@ -64,6 +70,11 @@ class _UnusedGateway:
         self, *, original: str, edited: str, attribute: str, criterion: str
     ) -> UtilityVerdict:
         raise AssertionError("the utility judge must not run on an early-exit path")
+
+    async def decoy(
+        self, *, text: str, spans: list[str], attribute: str, decoy_value: str | None = None
+    ) -> DecoyEdit:
+        raise AssertionError("the decoy editor must not run on an early-exit path")
 
 
 class _UnusedEmbedder:
@@ -214,8 +225,10 @@ async def _seed_remediation(app_engine: AsyncEngine, user_id: uuid.UUID) -> uuid
             owner_user_id=user_id,
             master_key=_MASTER_KEY,
             action="rewrite",
+            option_key="minimal",
             edited_text=_EDIT,
             span_changes=[{"item_id": "a", "op": "generalize", "replacement": _EDIT}],
+            misled_value=None,
             confidence_before=0.86,
             confidence_after=0.21,
             ci_before={"point": 0.86, "lo": 0.80, "hi": 0.90},
@@ -242,7 +255,7 @@ async def test_remediation_round_trips_the_encrypted_edit(
                 text(
                     "SELECT decrypt_field(app_user_id(), edited_text_ct, :mk)::text, action, "
                     "  significant, value_recovery_before, value_recovery_after, "
-                    "  confidence_before, confidence_after, span_changes "
+                    "  confidence_before, confidence_after, span_changes, option_key "
                     "FROM remediations WHERE id = :id"
                 ),
                 {"mk": _MASTER_KEY, "id": remediation_id},
@@ -254,6 +267,7 @@ async def test_remediation_round_trips_the_encrypted_edit(
     assert row[3] is True and row[4] is False  # the value-recovery flip persisted
     assert float(row[5]) == 0.86 and float(row[6]) == 0.21  # calibrated before/after
     assert row[7] == [{"item_id": "a", "op": "generalize", "replacement": _EDIT}]  # span_changes
+    assert row[8] == "minimal"  # the frontier position persisted
 
 
 async def test_remediation_is_rls_isolated(
