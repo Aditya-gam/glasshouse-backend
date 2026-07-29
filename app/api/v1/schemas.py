@@ -61,10 +61,12 @@ class RemediationParams(ApiModel):
     """`RunCreate.params` for `type="remediation"` — the inference to defend (M3.7).
 
     Parsed from the free-form `params` in the handler (not a top-level body), so `inference_id` is
-    validated as a UUID and a missing/invalid value fails as 422 at the boundary.
+    validated as a UUID and a missing/invalid value fails as 422 at the boundary. `decoy=true` is
+    the per-use confirm that adds the opt-in decoy option (gated by `require_decoy`).
     """
 
     inference_id: UUID
+    decoy: bool = False
 
 
 class RunAccepted(ApiModel):

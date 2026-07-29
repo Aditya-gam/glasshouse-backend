@@ -370,12 +370,20 @@ class Remediation(_UuidPk, _Timestamped, Base):
             "action IN ('rewrite','remove','strip_exif','crop','inpaint','decoy')",
             name="ck_remediation_action",
         ),
+        CheckConstraint(
+            "option_key IN ('minimal','stronger','remove','decoy')",
+            name="ck_remediation_option_key",
+        ),
     )
 
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
     inference_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("inferences.id", ondelete="CASCADE"))
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
     action: Mapped[str] = mapped_column(Text)
+    # the frontier position (minimal/stronger/remove/decoy) — distinguishes the two `rewrite` rows.
+    option_key: Mapped[str] = mapped_column(Text, server_default=text("'minimal'"))
+    # decoy only: the plausible FALSE value the adversary is now steered to (read: misled).
+    misled_value: Mapped[str | None] = mapped_column(Text)
     edited_text_ct: Mapped[bytes | None] = mapped_column(LargeBinary)
     span_changes: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     artifact_ref: Mapped[str | None] = mapped_column(Text)

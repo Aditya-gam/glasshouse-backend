@@ -31,6 +31,7 @@ MatchVerdictLabel = Literal["yes", "partial", "no"]
 GeoLevel = Literal["country", "region", "city", "neighborhood"]
 UtilityGrade = Literal["fully", "mostly", "partially", "lost"]
 UtilityCriterion = Literal["meaning", "readability"]
+Strength = Literal["minimal", "stronger"]  # anonymizer aggressiveness (M3.7b frontier)
 
 
 class UtilityVerdict(BaseModel):
@@ -192,13 +193,20 @@ class GatewayClient:
         return result
 
     async def anonymize(
-        self, *, text: str, spans: list[str], attribute: str, feedback: str | None = None
+        self,
+        *,
+        text: str,
+        spans: list[str],
+        attribute: str,
+        feedback: str | None = None,
+        strength: Strength = "minimal",
     ) -> AnonymizerEdit:
         """One truthful localized privacy edit through the `anonymizer` slot (defend M3.3).
 
         Given the text + the leaking spans (+ optional adversary feedback to refine against),
-        returns a minimal, generalization-first rewrite. The anonymizer is separate from the
-        feedback/evaluator adversaries and the judges (the separation chain). Content never logged.
+        returns a generalization-first rewrite at the requested `strength` (`minimal` = lightest
+        change, highest utility; `stronger` = broader abstraction). The anonymizer is separate from
+        the feedback/evaluator adversaries and the judges (the separation chain). Never logged.
         """
         result: AnonymizerEdit = await self._client.chat.completions.create(
             model="anonymizer",
@@ -209,7 +217,7 @@ class GatewayClient:
                 {"role": "system", "content": ANONYMIZE_SYSTEM},
                 {
                     "role": "user",
-                    "content": build_anonymize_prompt(text, spans, attribute, feedback),
+                    "content": build_anonymize_prompt(text, spans, attribute, feedback, strength),
                 },
             ],
         )
