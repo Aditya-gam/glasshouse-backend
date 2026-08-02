@@ -201,12 +201,15 @@ async def test_list_by_inference_serves_the_proven_frontier(
     body = resp.json()
     assert len(body) == 1
     rem = body[0]
-    assert rem["status"] == "proven" and rem["target"]["value"] == "Seattle, USA"
+    assert rem["status"] == "proven"
+    assert rem["target"]["value"] == "Seattle, USA"
     assert rem["target"]["before"]["point"] == 0.86
     assert [o["key"] for o in rem["options"]] == ["minimal", "stronger", "remove"]
     minimal = rem["options"][0]
-    assert minimal["after"]["point"] == 0.20 and minimal["recovered"] is False
-    assert minimal["utility"] == 75 and minimal["edits"][0]["edited"] == "I live near a nearby city"
+    assert minimal["after"]["point"] == 0.20
+    assert minimal["recovered"] is False
+    assert minimal["utility"] == 75
+    assert minimal["edits"][0]["edited"] == "I live near a nearby city"
 
 
 async def test_get_by_run_id_serves_the_frontier(
@@ -219,7 +222,8 @@ async def test_get_by_run_id_serves_the_frontier(
     resp = await client.get(f"/v1/remediations/{run_id}", headers={"X-Dev-User-Id": str(user_id)})
 
     assert resp.status_code == 200
-    assert resp.json()["status"] == "proven" and len(resp.json()["options"]) == 3
+    assert resp.json()["status"] == "proven"
+    assert len(resp.json()["options"]) == 3
 
 
 async def test_list_returns_one_read_per_run_newest_first(
@@ -259,7 +263,9 @@ async def test_inference_without_options_is_cant_break(
 
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body) == 1 and body[0]["status"] == "cant_break" and body[0]["options"] == []
+    assert len(body) == 1
+    assert body[0]["status"] == "cant_break"
+    assert body[0]["options"] == []
 
 
 async def test_read_is_rls_isolated(
@@ -275,7 +281,8 @@ async def test_read_is_rls_isolated(
     )
     fetched = await client.get(f"/v1/remediations/{run_id}", headers={"X-Dev-User-Id": str(other)})
 
-    assert listed.status_code == 200 and listed.json() == []  # inference is RLS-hidden
+    assert listed.status_code == 200
+    assert listed.json() == []  # inference is RLS-hidden
     assert fetched.status_code == 404  # the run's rows are RLS-hidden → not found
 
 
@@ -295,11 +302,13 @@ async def test_read_handlers_directly(
     async with app_engine.connect() as conn, conn.begin():
         await set_rls_context(conn, user_id)
         by_run = await get_remediation(run_id, conn, user_id)
-        assert by_run.status == "proven" and len(by_run.options) == 3
+        assert by_run.status == "proven"
+        assert len(by_run.options) == 3
         with pytest.raises(NotFound):
             await get_remediation(uuid.uuid4(), conn, user_id)  # unknown run → 404
         by_inference = await list_remediations(conn, user_id, inference_id)
-        assert len(by_inference) == 1 and by_inference[0].status == "proven"
+        assert len(by_inference) == 1
+        assert by_inference[0].status == "proven"
         assert await list_remediations(conn, user_id, None) == []  # no filter → empty for now
 
 
@@ -315,4 +324,6 @@ async def test_cant_break_handler_directly(
         await set_rls_context(conn, user_id)
         listed = await list_remediations(conn, user_id, inference_id)
 
-    assert len(listed) == 1 and listed[0].status == "cant_break" and listed[0].options == []
+    assert len(listed) == 1
+    assert listed[0].status == "cant_break"
+    assert listed[0].options == []

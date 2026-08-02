@@ -54,20 +54,25 @@ def test_proven_frontier_maps_options_and_edits() -> None:
 
     assert rem.status == "proven"  # an option clears the floor AND flips recovery
     assert [o.key for o in rem.options] == ["minimal", "stronger", "remove"]
-    assert rem.target.before == _BEFORE and rem.target.value == "Seattle, WA"
+    assert rem.target.before == _BEFORE
+    assert rem.target.value == "Seattle, WA"
 
     minimal = rem.options[0]
-    assert minimal.truthful is True and minimal.recovered is False
-    assert minimal.after.point == 0.20 and minimal.after.lo == 0.10  # from ci_after
-    assert minimal.utility == 75 and minimal.utility_label == "Mostly preserved"
+    assert minimal.truthful is True
+    assert minimal.recovered is False
+    assert minimal.after.point == 0.20
+    assert minimal.after.lo == 0.10  # from ci_after
+    assert minimal.utility == 75
+    assert minimal.utility_label == "Mostly preserved"
     edit = minimal.edits[0]
     assert edit.original == "I live near Seattle"  # the FE diffs original vs edited
-    assert edit.edited == "I live near a nearby city" and edit.segs is None
+    assert edit.edited == "I live near a nearby city"
+    assert edit.segs is None
 
     remove = rem.options[2]
-    assert (
-        remove.remove is True and remove.edits[0].edited is None and remove.edits[0].remove is True
-    )
+    assert remove.remove is True
+    assert remove.edits[0].edited is None
+    assert remove.edits[0].remove is True
 
 
 def test_within_noise_when_no_option_is_proven() -> None:
@@ -109,7 +114,8 @@ def test_empty_frontier_is_cant_break() -> None:
         attribute="location", value="Seattle, WA", before=_BEFORE, rows=[], item_texts={}
     )
 
-    assert rem.status == "cant_break" and rem.options == []
+    assert rem.status == "cant_break"
+    assert rem.options == []
     assert rem.target.before == _BEFORE  # the exposure is still shown
 
 
@@ -121,6 +127,7 @@ def test_decoy_option_is_flagged_and_carries_the_misled_value() -> None:
     )
 
     decoy = rem.options[0]
-    assert decoy.truthful is False and decoy.opt_in is True
+    assert decoy.truthful is False
+    assert decoy.opt_in is True
     assert decoy.misled == "Portland, OR"  # the wrong value the adversary now guesses
     assert decoy.edits[0].decoy is True
