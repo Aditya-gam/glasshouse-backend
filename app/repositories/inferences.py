@@ -142,6 +142,23 @@ class InferenceTarget:
     value: dict[str, Any] | None
 
 
+async def get_inference_reliability(conn: AsyncConnection, inference_id: UUID) -> Decimal | None:
+    """The inference's top-1 calibrated reliability (RLS-scoped), or None if absent/uncalibrated.
+
+    The defend screen shows this as the target's `before` exposure when a remediation produced no
+    proven options (the un-localizable / cant_break case) — there is no adversary before-sample.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT c.calibrated_reliability FROM inference_candidates c "
+            "WHERE c.inference_id = :inf AND c.rank = 1"
+        ),
+        {"inf": inference_id},
+    )
+    row = result.first()
+    return None if row is None else row[0]
+
+
 async def get_inference_profile(conn: AsyncConnection, inference_id: UUID) -> UUID | None:
     """The inference's profile id (RLS-scoped), or None if absent/hidden — no decryption needed.
 

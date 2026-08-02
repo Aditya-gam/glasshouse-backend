@@ -179,9 +179,10 @@ class DiffSeg(ApiModel):
 class DefendEdit(ApiModel):
     src: str
     date: str
-    segs: list[DiffSeg] | None = None
+    segs: list[DiffSeg] | None = None  # optional pre-diffed segments; the FE may diff client-side
     remove: bool | None = None
-    original: str | None = None
+    original: str | None = None  # the item's original text
+    edited: str | None = None  # the suggested rewrite (None when the item is removed); FE diffs
     exif: bool | None = None
     crop: bool | None = None
     decoy: bool | None = None
