@@ -87,6 +87,30 @@ async def get_calibrated_reliability(
     return reliability
 
 
+async def list_calibration_points(
+    conn: AsyncConnection, engine_version: str
+) -> list[tuple[float, float]]:
+    """The reliability curve for an engine — `[(predicted, empirical)]` per confidence bucket (M2).
+
+    The public trust display's reliability curve. The map holds a row per (attribute, signal, n)
+    bucket; this pools them into one curve per predicted bucket by an **equal-weight macro-average**
+    of `empirical_accuracy`. NOTE (known limitation): that is not the sample-weighted frequency the
+    display implies — a low-sample cell sways a bucket as much as a high-sample one — but the
+    per-cell sample count needed to weight correctly is not persisted (`calibration.n` is the
+    self-consistency N, part of the key). Sample-weighting is a follow-up on the eval write path.
+    `engine_version` is the bare attack engine the map is keyed on (never a judge-suffixed scoring
+    version). Empty until a benchmark runs. `calibration` has no RLS; app-role SELECT is from 0001.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT confidence_bucket, avg(empirical_accuracy) FROM calibration "
+            "WHERE engine_version = :ev GROUP BY confidence_bucket ORDER BY confidence_bucket"
+        ),
+        {"ev": engine_version},
+    )
+    return [(float(row[0]), float(row[1])) for row in result]
+
+
 async def get_noise_std(
     conn: AsyncConnection, *, engine_version: str, attribute_code: str, modality: str = "text"
 ) -> Decimal | None:

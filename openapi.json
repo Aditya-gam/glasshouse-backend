@@ -2522,7 +2522,7 @@
     },
     "/v1/eval/calibration": {
       "get": {
-        "description": "The reliability curve (calibrated reliability + the noise model).",
+        "description": "The reliability curve (calibrated reliability + benchmark rows) for the trust display.\n\n`rows` is the latest benchmark's per-attribute accuracy; `calibration` is the pooled\n`[predicted, empirical]` curve for that same run's engine (so both halves describe one engine).\nBoth empty until an eval has run.",
         "operationId": "eval_calibration_v1_eval_calibration_get",
         "responses": {
           "200": {
@@ -2599,7 +2599,7 @@
     },
     "/v1/eval/results": {
       "get": {
-        "description": "Top-1/top-3 per attribute + modality + engine_version \u2014 the accuracy-trust view.",
+        "description": "Top-1/top-3 per attribute + modality + engine_version \u2014 the accuracy-trust view.\n\nThe latest benchmark run's per-attribute accuracy; empty until an eval has run.",
         "operationId": "eval_results_v1_eval_results_get",
         "responses": {
           "200": {

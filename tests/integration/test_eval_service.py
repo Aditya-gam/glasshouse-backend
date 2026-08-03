@@ -314,9 +314,12 @@ async def test_limit_slices_the_same_persona_every_run(owner_engine: AsyncEngine
     assert first == second
 
 
-async def test_eval_results_invisible_to_normal_users(
+async def test_eval_ground_truth_invisible_to_normal_users(
     owner_engine: AsyncEngine, app_engine: AsyncEngine
 ) -> None:
+    # eval_results holds non-personal benchmark accuracy — public (app-role SELECT granted in 0010
+    # for the trust reads). The benchmark ground-truth `eval_labels` stays grant-locked, so a normal
+    # user can read the numbers but never the answer key.
     await _seed_and_eval(owner_engine)
     async with owner_engine.begin() as conn:
         user_id: uuid.UUID = (
@@ -325,9 +328,10 @@ async def test_eval_results_invisible_to_normal_users(
 
     async with app_engine.connect() as conn, conn.begin():
         await set_rls_context(conn, user_id)
-        # eval_results / eval_labels have no app-role grant → not selectable at all.
-        with pytest.raises(Exception, match="permission denied"):
-            await conn.execute(text("SELECT count(*) FROM eval_results"))
+        eval_count = (await conn.execute(text("SELECT count(*) FROM eval_results"))).scalar_one()
+        assert eval_count > 0  # the public benchmark numbers are readable...
+        with pytest.raises(Exception, match="permission denied"):  # ...the answer key is not.
+            await conn.execute(text("SELECT count(*) FROM eval_labels"))
 
 
 async def test_match_judge_upgrades_occupation_and_flags_spot_checks(

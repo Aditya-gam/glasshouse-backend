@@ -21,10 +21,12 @@ from schemathesis.specs.openapi.checks import (
 from app.main import app
 
 _schema = schemathesis.openapi.from_asgi("/openapi.json", app)
-# Exclude the DB-backed reads — /v1/runs, /v1/inferences, /v1/remediations (covered by
-# test_runs_api / test_inferences_api / test_remediations_read) — and the infra probes /healthz,
-# /readyz (all need a live DB, not part of the fuzzable v1 contract).
-_contract = _schema.exclude(path_regex=r"^/(v1/runs|v1/inferences|v1/remediations|healthz|readyz)")
+# Exclude the DB-backed reads — /v1/runs, /v1/inferences, /v1/remediations, /v1/eval (covered by
+# test_runs_api / test_inferences_api / test_remediations_read / test_eval_reads) — and the infra
+# probes /healthz, /readyz (all need a live DB, not part of the fuzzable v1 contract).
+_contract = _schema.exclude(
+    path_regex=r"^/(v1/runs|v1/inferences|v1/remediations|v1/eval|healthz|readyz)"
+)
 # Positive conformance only: responses match the declared schema, status, and content type.
 # Negative/coverage probing (unsupported methods → RFC 9110 Allow headers, etc.) is M7.3's gate.
 _POSITIVE_CHECKS = [
