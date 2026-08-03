@@ -14,7 +14,8 @@ from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.api.deps import get_current_user, get_scoped_session
-from app.api.errors import NotImplementedYet
+from app.api.errors import NotFound, NotImplementedYet
+from app.api.v1.inference_assembly import assemble_finding
 from app.api.v1.schemas import (
     AttributeFindingRead,
     AttributeRead,
@@ -29,6 +30,7 @@ from app.domain.attributes import BY_CODE
 from app.domain.eval_match import render_value
 from app.domain.output_schema import AttributeCode, AttributeValue
 from app.repositories import inferences as inferences_repo
+from app.services.consent import has_special_category_consent
 
 router = APIRouter(prefix="/v1/inferences", tags=["inferences"])
 
@@ -60,6 +62,7 @@ def _to_attribute_read(row: inferences_repo.DashboardInference) -> AttributeRead
         else None
     )
     return AttributeRead(
+        id=row.id,
         code=spec.code,
         label=spec.label,
         value=value,
@@ -89,10 +92,24 @@ async def list_inferences(
 
 @router.get("/{inference_id}")
 async def get_inference(
-    inference_id: UUID, user_id: Annotated[UUID, Depends(get_current_user)]
+    inference_id: UUID,
+    conn: Annotated[AsyncConnection, Depends(get_scoped_session)],
 ) -> AttributeFindingRead:
-    """Ranked candidates with calibrated reliability + the evidence join. Lands with M3."""
-    raise NotImplementedYet("attribution detail lands at M3")
+    """One inference's attribution detail — ranked candidates + per-item evidence (RLS-scoped).
+
+    Tenant-scoped to the caller's RLS context: another user's id (or a missing one) → 404, never a
+    cross-tenant read (no IDOR). Special-category values/reasoning are decrypted only under valid
+    Art. 9 consent and masked otherwise (fail closed). Content is decrypted in-query, never logged.
+    """
+    finding = await inferences_repo.get_inference_finding(
+        conn,
+        inference_id,
+        get_master_key(),
+        include_special_category=await has_special_category_consent(conn),
+    )
+    if finding is None:
+        raise NotFound("inference not found")
+    return assemble_finding(finding)
 
 
 @router.post("/{inference_id}/confirm")

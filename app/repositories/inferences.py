@@ -5,6 +5,7 @@ and reasoning are encrypted at rest (`encrypt_field`, DEK never leaves Postgres)
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -206,6 +207,7 @@ async def get_inference_target(
 class DashboardInference:
     """One attribute's card data: status, the top-1 value, its calibrated reliability, evidence."""
 
+    id: UUID  # the inference's id → the card's link to GET /v1/inferences/{id}
     attribute_code: str
     status: str
     value: dict[str, Any] | None  # the canonical top-1 value (decrypted), or None if abstained
@@ -237,7 +239,7 @@ async def list_dashboard_inferences(
             "       ELSE NULL END AS value, "
             "  c.calibrated_reliability, "
             "  COALESCE((SELECT count(*) FROM inference_evidence e "
-            "            WHERE e.candidate_id = c.id), 0) "
+            "            WHERE e.candidate_id = c.id), 0), i.id "
             "FROM inferences i "
             "LEFT JOIN inference_candidates c ON c.inference_id = i.id AND c.rank = 1 "
             # cast the optional filters so asyncpg can type a NULL bound param in `IS NULL`.
@@ -250,6 +252,7 @@ async def list_dashboard_inferences(
     )
     return [
         DashboardInference(
+            id=row[5],
             attribute_code=row[0],
             status=row[1],
             value=row[2],
@@ -258,3 +261,137 @@ async def list_dashboard_inferences(
         )
         for row in result
     ]
+
+
+# --- attribution detail (M5.2): one finding — ranked candidates + per-item evidence ------------
+
+
+@dataclass(frozen=True)
+class FindingCandidate:
+    """One ranked candidate: decrypted value + its own calibrated reliability (never the raw)."""
+
+    rank: int
+    value: dict[str, Any] | None  # decrypted top value, or None (abstained / Art. 9-masked)
+    calibrated_reliability: Decimal | None
+
+
+@dataclass(frozen=True)
+class FindingEvidence:
+    """One cited evidence row joined to its source item (rationale + item text decrypted)."""
+
+    id: UUID
+    ref_type: str
+    modality: str
+    span: dict[str, Any] | None
+    region: dict[str, Any] | None
+    rationale: str | None
+    proxy_score: Decimal | None
+    citation_frequency: Decimal | None
+    marginal_effect: Decimal | None
+    item_text: str | None
+    posted_at: datetime | None
+    source: str | None
+
+
+@dataclass(frozen=True)
+class InferenceFinding:
+    """One attribution finding: the inference head + its ranked candidates + evidence items."""
+
+    attribute_code: str
+    status: str
+    reasoning: str | None
+    reasoning_reveals_art9: bool
+    candidates: list[FindingCandidate]
+    evidence: list[FindingEvidence]
+
+
+async def get_inference_finding(
+    conn: AsyncConnection,
+    inference_id: UUID,
+    master_key: str,
+    *,
+    include_special_category: bool,
+) -> InferenceFinding | None:
+    """One inference's full attribution detail (RLS-scoped), or None if absent/another user's.
+
+    Fail-closed on Art. 9: `include_special_category` is the caller's `art9_inference` consent; the
+    special-category value (`value_ct`) and any Art. 9-revealing reasoning decrypt only under it,
+    masked (NULL) at the SQL source otherwise — never decrypted then dropped. Ciphertext decrypts
+    in-query via `decrypt_field(app_user_id(), …, :mk)` (the DEK never leaves Postgres; keys are
+    bound params, never interpolated) and is never logged. RLS scopes the inference + its
+    candidates/evidence + the joined items to the caller, so there is no IDOR.
+    """
+    head = (
+        await conn.execute(
+            text(
+                "SELECT attribute_code, status, "
+                "  CASE WHEN reasoning_ct IS NOT NULL "
+                "            AND (NOT reasoning_reveals_art9 OR CAST(:art9 AS boolean)) "
+                "       THEN decrypt_field(app_user_id(), reasoning_ct, :mk)::text ELSE NULL END, "
+                "  reasoning_reveals_art9 "
+                "FROM inferences WHERE id = :inf"
+            ),
+            {"mk": master_key, "inf": inference_id, "art9": include_special_category},
+        )
+    ).first()
+    if head is None:
+        return None
+
+    candidate_rows = await conn.execute(
+        text(
+            "SELECT rank, "
+            "  CASE WHEN value IS NOT NULL THEN value "
+            "       WHEN value_ct IS NOT NULL AND CAST(:art9 AS boolean) "
+            "         THEN decrypt_field(app_user_id(), value_ct, :mk)::jsonb ELSE NULL END, "
+            "  calibrated_reliability "
+            "FROM inference_candidates WHERE inference_id = :inf ORDER BY rank"
+        ),
+        {"mk": master_key, "inf": inference_id, "art9": include_special_category},
+    )
+    candidates = [
+        FindingCandidate(rank=row[0], value=row[1], calibrated_reliability=row[2])
+        for row in candidate_rows
+    ]
+
+    evidence_rows = await conn.execute(
+        text(
+            "SELECT e.id, e.ref_type, e.modality, e.span, e.region, "
+            "  CASE WHEN e.rationale_ct IS NOT NULL "
+            "       THEN decrypt_field(app_user_id(), e.rationale_ct, :mk)::text ELSE NULL END, "
+            "  e.proxy_score, e.citation_frequency, e.marginal_effect, "
+            "  CASE WHEN it.text_ct IS NOT NULL "
+            "       THEN decrypt_field(app_user_id(), it.text_ct, :mk)::text ELSE NULL END, "
+            "  it.posted_at, src.platform "
+            "FROM inference_evidence e "
+            "JOIN inference_candidates c ON c.id = e.candidate_id "
+            "LEFT JOIN items it ON e.ref_type = 'item' AND it.id = e.ref_id "
+            "LEFT JOIN import_sources src ON src.id = it.import_source_id "
+            "WHERE c.inference_id = :inf ORDER BY c.rank, e.id"
+        ),
+        {"mk": master_key, "inf": inference_id},
+    )
+    evidence = [
+        FindingEvidence(
+            id=row[0],
+            ref_type=row[1],
+            modality=row[2],
+            span=row[3],
+            region=row[4],
+            rationale=row[5],
+            proxy_score=row[6],
+            citation_frequency=row[7],
+            marginal_effect=row[8],
+            item_text=row[9],
+            posted_at=row[10],
+            source=row[11],
+        )
+        for row in evidence_rows
+    ]
+    return InferenceFinding(
+        attribute_code=head[0],
+        status=head[1],
+        reasoning=head[2],
+        reasoning_reveals_art9=head[3],
+        candidates=candidates,
+        evidence=evidence,
+    )
