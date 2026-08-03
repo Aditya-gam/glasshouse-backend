@@ -116,3 +116,18 @@ async def get_scoped_session(
     async with engine.connect() as conn, conn.begin():
         await set_rls_context(conn, user_id)
         yield conn
+
+
+async def get_public_session(
+    engine: Annotated[AsyncEngine, Depends(get_app_engine)],
+) -> AsyncIterator[AsyncConnection]:
+    """A read-only app-role connection with NO user and NO RLS context — for the public eval reads.
+
+    The eval/calibration numbers are non-personal (Job 1 credibility), so these endpoints carry no
+    auth and set no `app.user_id` GUC. The reads touch only the non-tenant `eval_results` /
+    `calibration` tables (no RLS policy); the newest eval run is resolved via the
+    `latest_eval_run_id()` SECURITY DEFINER helper, so `runs` RLS is never in the path. Read-only —
+    no transaction/commit needed.
+    """
+    async with engine.connect() as conn:
+        yield conn

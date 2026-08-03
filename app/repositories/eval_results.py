@@ -5,6 +5,7 @@ public accuracy/trust number; no data subject, so no encryption.
 """
 
 import json
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -40,6 +41,56 @@ async def insert_eval_result(
             "ev": engine_version,
         },
     )
+
+
+@dataclass(frozen=True)
+class EvalResultRow:
+    """One attribute's benchmark accuracy for the latest eval run — the public trust read (M2)."""
+
+    attribute_code: str
+    modality: str
+    top1: float
+    top3: float
+    engine_version: str
+
+
+async def latest_eval_results(conn: AsyncConnection) -> list[EvalResultRow]:
+    """Every attribute's top-1/top-3 for the most recent `eval` run — the public accuracy view.
+
+    Reads the non-tenant `eval_results` (no RLS; app-role SELECT granted in 0010). The newest eval
+    run is resolved via `latest_eval_run_id()` (SECURITY DEFINER), so `runs` RLS is never in the
+    path and this works on a no-user public connection. Empty when no benchmark has run yet.
+    """
+    result = await conn.execute(
+        text(
+            "SELECT attribute_code, modality, top1_acc, top3_acc, engine_version "
+            "FROM eval_results WHERE run_id = latest_eval_run_id() ORDER BY attribute_code"
+        )
+    )
+    return [
+        EvalResultRow(
+            attribute_code=row[0],
+            modality=row[1],
+            top1=float(row[2]) if row[2] is not None else 0.0,
+            top3=float(row[3]) if row[3] is not None else 0.0,
+            engine_version=row[4],
+        )
+        for row in result
+    ]
+
+
+async def latest_eval_engine_version(conn: AsyncConnection) -> str | None:
+    """The latest eval run's *bare* engine_version (the calibration map's key), or None if no run.
+
+    Resolved via the `latest_eval_engine_version()` SECURITY DEFINER helper (bypasses `runs` RLS for
+    the public reader). `runs.engine_version` is stored bare (no judge suffix), so it is the key the
+    calibration curve needs — and the same run whose accuracy rows `/results` shows, so the trust
+    view's two halves describe one engine. NOT `eval_results.engine_version`, which may carry a
+    `+match_judge_v1@judge` scoring suffix the calibration map is never keyed on.
+    """
+    result = await conn.execute(text("SELECT latest_eval_engine_version()"))
+    engine_version: str | None = result.scalar_one()
+    return engine_version
 
 
 async def latest_eval_top1(conn: AsyncConnection) -> dict[str, float]:
