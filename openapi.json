@@ -217,6 +217,18 @@
             ],
             "title": "Evidence Count"
           },
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -3132,7 +3144,7 @@
     },
     "/v1/inferences/{inference_id}": {
       "get": {
-        "description": "Ranked candidates with calibrated reliability + the evidence join. Lands with M3.",
+        "description": "One inference's attribution detail \u2014 ranked candidates + per-item evidence (RLS-scoped).\n\nTenant-scoped to the caller's RLS context: another user's id (or a missing one) \u2192 404, never a\ncross-tenant read (no IDOR). Special-category values/reasoning are decrypted only under valid\nArt. 9 consent and masked otherwise (fail closed). Content is decrypted in-query, never logged.",
         "operationId": "get_inference_v1_inferences__inference_id__get",
         "parameters": [
           {

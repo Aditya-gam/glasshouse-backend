@@ -129,6 +129,7 @@ class EvidenceRead(ApiModel):
 class AttributeRead(ApiModel):
     """A dashboard attribute card. `null` reliability ⇔ abstain."""
 
+    id: UUID | None = None  # the latest inference's id → GET /v1/inferences/{id} (null ⇔ no run)
     code: str
     label: str
     value: str | None
