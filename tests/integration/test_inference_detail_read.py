@@ -121,6 +121,7 @@ async def _seed_finding(
     with_evidence: bool = True,
     item_text: str = "Grabbed coffee near Pike Place this morning.",
     quote: str = "near Pike Place",
+    evidence_rationale: str = "mentions the neighborhood",
 ) -> uuid.UUID:
     """Seed one inference + ranked candidates (+ evidence and its source item); returns its id."""
     async with app_engine.connect() as conn, conn.begin():
@@ -202,7 +203,7 @@ async def _seed_finding(
                 ref_type="item",
                 ref_id=item_id,
                 span_json=json.dumps({"quote": quote}),
-                rationale="mentions the neighborhood",
+                rationale=evidence_rationale,
                 owner_user_id=user_id,
                 master_key=_MASTER_KEY,
             )
@@ -261,7 +262,9 @@ async def test_art9_value_masked_without_consent(
         value=_DAMASCUS,
         alt_value=None,
         reasoning="They mention being born in Damascus.",
-        with_evidence=False,
+        item_text="Missing home back in Damascus.",
+        quote="born in Damascus",
+        evidence_rationale="The post says they were born in Damascus.",
     )
 
     resp = await client.get(f"/v1/inferences/{inference_id}", headers=_headers(user_id))
@@ -272,6 +275,10 @@ async def test_art9_value_masked_without_consent(
     assert body["value"] is None  # the special-category value is masked...
     assert body["candidates"][0]["label"] == ""  # ...including the candidate's rendered value...
     assert body["reasoning"] == ""  # ...and the Art. 9-revealing reasoning is withheld
+    # the evidence rationale re-reveals the special category, so it is masked too...
+    assert body["evidence_items"][0]["rationale"] == ""
+    # ...but the item text is the user's OWN source content, always shown to them
+    assert body["evidence_items"][0]["text"] == "Missing home back in Damascus."
     # the reliability is not the sensitive value, so it is still shown
     assert body["reliability"]["point"] == 0.76
 
@@ -290,7 +297,9 @@ async def test_art9_value_shown_with_consent(
         value=_DAMASCUS,
         alt_value=None,
         reasoning="They mention being born in Damascus.",
-        with_evidence=False,
+        item_text="Missing home back in Damascus.",
+        quote="born in Damascus",
+        evidence_rationale="The post says they were born in Damascus.",
     )
 
     resp = await client.get(f"/v1/inferences/{inference_id}", headers=_headers(user_id))
@@ -299,6 +308,8 @@ async def test_art9_value_shown_with_consent(
     assert body["value"] == "Damascus, Syria"  # decrypted under valid Art. 9 consent
     assert body["candidates"][0]["label"] == "Damascus, Syria"
     assert body["reasoning"] == "They mention being born in Damascus."
+    # under consent the Art. 9 evidence rationale is shown too
+    assert body["evidence_items"][0]["rationale"] == "The post says they were born in Damascus."
 
 
 async def test_another_users_inference_is_404_no_idor(

@@ -314,12 +314,14 @@ async def get_inference_finding(
 ) -> InferenceFinding | None:
     """One inference's full attribution detail (RLS-scoped), or None if absent/another user's.
 
-    Fail-closed on Art. 9: `include_special_category` is the caller's `art9_inference` consent; the
-    special-category value (`value_ct`) and any Art. 9-revealing reasoning decrypt only under it,
-    masked (NULL) at the SQL source otherwise — never decrypted then dropped. Ciphertext decrypts
-    in-query via `decrypt_field(app_user_id(), …, :mk)` (the DEK never leaves Postgres; keys are
-    bound params, never interpolated) and is never logged. RLS scopes the inference + its
-    candidates/evidence + the joined items to the caller, so there is no IDOR.
+    Fail-closed on Art. 9: `include_special_category` is the caller's `art9_inference` consent. The
+    special-category value (`value_ct`), any Art. 9-revealing reasoning, and an Art. 9 finding's
+    evidence rationale (all T2 Art. 9-scrubbed) decrypt only under it, masked (NULL) at the SQL
+    source otherwise — never decrypted then dropped. The item text is the owner's own source content
+    (never Art. 9-scrubbed), so it is never gated. Ciphertext decrypts in-query via
+    `decrypt_field(app_user_id(), …, :mk)` (the DEK never leaves Postgres; keys are bound params,
+    never interpolated) and is never logged. RLS scopes the inference + its candidates/evidence +
+    the joined items to the caller, so there is no IDOR.
     """
     head = (
         await conn.execute(
@@ -356,7 +358,11 @@ async def get_inference_finding(
     evidence_rows = await conn.execute(
         text(
             "SELECT e.id, e.ref_type, e.modality, e.span, e.region, "
+            # rationale is T2 Art. 9-scrubbed too: an Art. 9 candidate's rationale re-reveals the
+            # value, so gate it on consent (via the candidate's art9-ness = value_ct present), the
+            # same guard as the value. `item text` is the owner's own source content, never gated.
             "  CASE WHEN e.rationale_ct IS NOT NULL "
+            "            AND (c.value_ct IS NULL OR CAST(:art9 AS boolean)) "
             "       THEN decrypt_field(app_user_id(), e.rationale_ct, :mk)::text ELSE NULL END, "
             "  e.proxy_score, e.citation_frequency, e.marginal_effect, "
             "  CASE WHEN it.text_ct IS NOT NULL "
@@ -368,7 +374,7 @@ async def get_inference_finding(
             "LEFT JOIN import_sources src ON src.id = it.import_source_id "
             "WHERE c.inference_id = :inf ORDER BY c.rank, e.id"
         ),
-        {"mk": master_key, "inf": inference_id},
+        {"mk": master_key, "inf": inference_id, "art9": include_special_category},
     )
     evidence = [
         FindingEvidence(
