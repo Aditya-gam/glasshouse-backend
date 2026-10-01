@@ -203,6 +203,9 @@ async def test_art9_birthplace_masked_without_consent(
     assert birthplace["value"] is None  # value_ct never decrypted without consent (SQL-source mask)
     assert birthplace["art9"] is True and birthplace["sensitive"] is True
     assert birthplace["reliability"]["point"] == 0.60  # reliability is not the sensitive value
+    # a masked card is still an INFERENCE, not an abstain — the UI must not render "no inference"
+    assert birthplace["abstain"] is False
+    assert birthplace["evidence"] != "no inference"
 
 
 async def test_art9_birthplace_decrypted_with_consent(
