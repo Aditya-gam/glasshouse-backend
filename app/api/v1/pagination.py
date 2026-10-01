@@ -27,5 +27,6 @@ def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
     try:
         payload = json.loads(base64.urlsafe_b64decode(cursor.encode()))
         return datetime.fromisoformat(payload["ts"]), UUID(payload["id"])
-    except (binascii.Error, ValueError, KeyError, TypeError) as exc:
+    # AttributeError: a non-string JSON `id` (e.g. a number) makes UUID() call .replace() on it.
+    except (binascii.Error, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise InvalidCursor("malformed pagination cursor") from exc

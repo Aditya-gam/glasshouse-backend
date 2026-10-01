@@ -1,5 +1,7 @@
 """Unit (M5.2): the opaque pagination cursor codec — round-trip, opacity, tamper rejection."""
 
+import base64
+import json
 import uuid
 from datetime import UTC, datetime
 
@@ -37,3 +39,14 @@ def test_cursor_is_opaque_and_url_safe() -> None:
 def test_malformed_cursor_raises(bad: str) -> None:
     with pytest.raises(InvalidCursor):
         decode_cursor(bad)
+
+
+def test_non_string_id_raises_not_a_500() -> None:
+    # a tampered cursor whose JSON `id` is a non-string (UUID() would AttributeError on it) must
+    # surface as InvalidCursor (→ 422), never escape as an unhandled error.
+    forged = base64.urlsafe_b64encode(
+        json.dumps({"ts": "2026-05-01T12:30:45+00:00", "id": 123}).encode()
+    ).decode()
+
+    with pytest.raises(InvalidCursor):
+        decode_cursor(forged)

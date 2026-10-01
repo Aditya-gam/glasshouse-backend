@@ -129,6 +129,44 @@ async def test_paginates_newest_first_without_gaps_or_dupes(
     assert pages == 3  # 2 + 2 + 1
 
 
+async def test_pagination_tiebreaks_on_id_for_equal_created_at(
+    client: AsyncClient, owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    # three runs sharing ONE created_at — only the (created_at, id) tiebreak keeps the page walk
+    # whole (a `created_at < :ts` keyset would silently drop the boundary row). now() is the txn
+    # start time, so same-transaction inserts naturally collide on created_at.
+    user_id = await _seed_user(owner_engine)
+    async with app_engine.connect() as conn, conn.begin():
+        await set_rls_context(conn, user_id)
+        profile_id = await get_or_create_self_profile(conn, user_id)
+        ids = [
+            (
+                await conn.execute(
+                    text(
+                        "INSERT INTO runs (profile_id, type, status, engine_version, created_at) "
+                        "VALUES (:p, 'attack', 'queued', 'attack_text_v1', "
+                        "        TIMESTAMPTZ '2026-05-01 00:00:00+00') RETURNING id"
+                    ),
+                    {"p": profile_id},
+                )
+            ).scalar_one()
+            for _ in range(3)
+        ]
+
+    collected: list[str] = []
+    cursor: str | None = None
+    while True:
+        url = "/v1/runs?limit=2" + (f"&cursor={cursor}" if cursor else "")
+        body = (await client.get(url, headers=_headers(user_id))).json()
+        collected += [item["id"] for item in body["items"]]
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+
+    # all three emitted exactly once despite the identical timestamp — the id tiebreak held
+    assert sorted(collected) == sorted(str(run_id) for run_id in ids)
+
+
 async def test_runs_list_is_rls_scoped_to_the_caller(
     client: AsyncClient, owner_engine: AsyncEngine, app_engine: AsyncEngine
 ) -> None:
