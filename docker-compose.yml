@@ -36,6 +36,9 @@ services:
       target: dev
     environment:
       DATABASE_URL: postgresql+asyncpg://glasshouse:glasshouse@db:5432/glasshouse
+      # The RLS-enforced app role must also point at the compose `db` host — its default is
+      # localhost, which is unreachable inside the container (500s on every request-path call).
+      APP_DATABASE_URL: postgresql+asyncpg://glasshouse_app:glasshouse_app@db:5432/glasshouse
       REDIS_URL: redis://redis:6379
     ports:
       - "8000:8000"
