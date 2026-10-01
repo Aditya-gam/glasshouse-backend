@@ -1237,6 +1237,34 @@
         "title": "RunCreate",
         "type": "object"
       },
+      "RunPage": {
+        "description": "A cursor page of runs, newest first. `next_cursor` is null on the last page; clients echo\nit back as the `cursor` query param to fetch the next page and treat it as opaque.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunStatus"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "RunPage",
+        "type": "object"
+      },
       "RunStatus": {
         "description": "Poll response for a run.",
         "properties": {
@@ -3729,9 +3757,37 @@
     },
     "/v1/runs": {
       "get": {
-        "description": "Cursor-paginated list \u2014 lands with M5.2 (routers + pagination).",
+        "description": "The caller's runs, newest first, cursor-paginated (RLS-scoped).\n\n`cursor` is an opaque token from a prior page's `next_cursor` \u2014 omit it for the first page. A\nmalformed cursor is a 422. `next_cursor` is null on the last page. Keyset, not OFFSET.",
         "operationId": "list_runs_v1_runs_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
           {
             "in": "header",
             "name": "x-dev-user-id",
@@ -3755,11 +3811,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/RunStatus"
-                  },
-                  "title": "Response List Runs V1 Runs Get",
-                  "type": "array"
+                  "$ref": "#/components/schemas/RunPage"
                 }
               }
             },

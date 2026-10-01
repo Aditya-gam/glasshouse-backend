@@ -104,6 +104,34 @@ async def set_run_status_where(
     return result.first() is not None
 
 
+async def list_runs_page(
+    conn: AsyncConnection, *, limit: int, after: tuple[datetime, UUID] | None
+) -> tuple[list[RunRow], tuple[datetime, UUID] | None]:
+    """One keyset page of the caller's runs, newest first (RLS-scoped), + the next-page key or None.
+
+    Keyset off the stable `(created_at, id)` key — not OFFSET, which re-scans and skips/dupes rows
+    under concurrent inserts (api-design). Fetches `limit` + 1 to tell whether a next page exists;
+    returns at most `limit` rows, plus the last row's key as the next cursor when more remain. A
+    NULL `after` (first page) skips the keyset predicate.
+    """
+    ts, rid = after if after is not None else (None, None)
+    result = await conn.execute(
+        text(
+            "SELECT id, profile_id, type, status, engine_version, created_at, finished_at "
+            "FROM runs "
+            "WHERE (CAST(:ts AS timestamptz) IS NULL "
+            "       OR (created_at, id) < (CAST(:ts AS timestamptz), CAST(:rid AS uuid))) "
+            "ORDER BY created_at DESC, id DESC LIMIT :fetch"
+        ),
+        {"ts": ts, "rid": rid, "fetch": limit + 1},
+    )
+    rows = [_to_run_row(row) for row in result]
+    if len(rows) > limit:
+        page = rows[:limit]
+        return page, (page[-1].created_at, page[-1].id)
+    return rows, None
+
+
 async def get_run(conn: AsyncConnection, run_id: UUID) -> RunRow | None:
     """Return the run, or None if absent or RLS-hidden (another user's run)."""
     result = await conn.execute(
