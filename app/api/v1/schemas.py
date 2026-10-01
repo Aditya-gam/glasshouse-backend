@@ -86,6 +86,14 @@ class RunStatus(ApiModel):
     error: str | None = None
 
 
+class RunPage(ApiModel):
+    """A cursor page of runs, newest first. `next_cursor` is null on the last page; clients echo
+    it back as the `cursor` query param to fetch the next page and treat it as opaque."""
+
+    items: list[RunStatus]
+    next_cursor: str | None = None
+
+
 # ------------------------------------------------------------- inferences --
 class Candidate(ApiModel):
     rank: int

@@ -11,7 +11,7 @@ from typing import Annotated
 from uuid import UUID
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
@@ -24,7 +24,8 @@ from app.api.deps import (
     get_scoped_session,
 )
 from app.api.errors import NotFound, NotImplementedYet
-from app.api.v1.schemas import RemediationParams, RunAccepted, RunCreate, RunStatus
+from app.api.v1.pagination import InvalidCursor, decode_cursor, encode_cursor
+from app.api.v1.schemas import RemediationParams, RunAccepted, RunCreate, RunPage, RunStatus
 from app.db.rls import set_rls_context
 from app.gateway.prompts import ADVERSARY_VERSION, ENGINE_VERSION
 from app.repositories import inferences as inferences_repo
@@ -136,9 +137,30 @@ async def read_run(
 
 
 @router.get("")
-async def list_runs(user_id: Annotated[UUID, Depends(get_current_user)]) -> list[RunStatus]:
-    """Cursor-paginated list — lands with M5.2 (routers + pagination)."""
-    raise NotImplementedYet("run listing lands with M5.2")
+async def list_runs(
+    conn: Annotated[AsyncConnection, Depends(get_scoped_session)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: str | None = None,
+) -> RunPage:
+    """The caller's runs, newest first, cursor-paginated (RLS-scoped).
+
+    `cursor` is an opaque token from a prior page's `next_cursor` — omit it for the first page. A
+    malformed cursor is a 422. `next_cursor` is null on the last page. Keyset, not OFFSET.
+    """
+    try:
+        after = decode_cursor(cursor) if cursor else None
+    except InvalidCursor as exc:
+        raise RequestValidationError(
+            [{"loc": ("query", "cursor"), "msg": str(exc), "type": "value_error"}]
+        ) from exc
+    rows, next_key = await runs_repo.list_runs_page(conn, limit=limit, after=after)
+    return RunPage(
+        items=[
+            RunStatus(id=r.id, type=r.type, status=r.status, engine_version=r.engine_version)
+            for r in rows
+        ],
+        next_cursor=encode_cursor(*next_key) if next_key is not None else None,
+    )
 
 
 def _sse(event: str, data: str) -> str:
