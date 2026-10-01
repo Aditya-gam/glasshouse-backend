@@ -83,9 +83,17 @@ async def list_inferences(
     run_id: UUID | None = None,
     profile_id: UUID | None = None,
 ) -> list[AttributeRead]:
-    """The user's attribute cards (RLS-scoped), optionally filtered to one run / profile."""
+    """The user's attribute cards (RLS-scoped), optionally filtered to one run / profile.
+
+    Special-category (Art. 9) values are decrypted only under valid `art9_inference` consent and
+    masked otherwise — the same fail-closed gate as the attribution detail.
+    """
     rows = await inferences_repo.list_dashboard_inferences(
-        conn, master_key=get_master_key(), run_id=run_id, profile_id=profile_id
+        conn,
+        master_key=get_master_key(),
+        include_special_category=await has_special_category_consent(conn),
+        run_id=run_id,
+        profile_id=profile_id,
     )
     return [_to_attribute_read(row) for row in rows]
 

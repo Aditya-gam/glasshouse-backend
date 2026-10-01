@@ -219,6 +219,7 @@ async def list_dashboard_inferences(
     conn: AsyncConnection,
     *,
     master_key: str,
+    include_special_category: bool,
     run_id: UUID | None = None,
     profile_id: UUID | None = None,
 ) -> list[DashboardInference]:
@@ -226,15 +227,17 @@ async def list_dashboard_inferences(
 
     Exactly one card per attribute — the **latest** inference for each (`DISTINCT ON` + newest
     first), so a user who has run several attacks sees their current audit, not one card per run.
-    The Art. 9 value is decrypted in-query with the caller's DEK (`app_user_id()`), so plaintext
-    never leaves Postgres in a column; the raw model confidence is never selected (only the
-    calibrated point). Optionally filtered to one run / profile.
+    Fail-closed on Art. 9 (`include_special_category` = the caller's `art9_inference` consent): the
+    special-category value (`value_ct`, present iff the candidate is Art. 9) is decrypted in-query
+    with the caller's DEK only under consent, masked (NULL) at the SQL source otherwise — the same
+    guard as the detail read. The raw model confidence is never selected (only the calibrated
+    point). Optionally filtered to one run / profile.
     """
     result = await conn.execute(
         text(
             "SELECT DISTINCT ON (i.attribute_code) i.attribute_code, i.status, "
             "  CASE WHEN c.value IS NOT NULL THEN c.value "
-            "       WHEN c.value_ct IS NOT NULL "
+            "       WHEN c.value_ct IS NOT NULL AND CAST(:art9 AS boolean) "
             "         THEN decrypt_field(app_user_id(), c.value_ct, :mk)::jsonb "
             "       ELSE NULL END AS value, "
             "  c.calibrated_reliability, "
@@ -248,7 +251,12 @@ async def list_dashboard_inferences(
             # DISTINCT ON keeps the first row per attribute → newest wins (the current audit).
             "ORDER BY i.attribute_code, i.created_at DESC"
         ),
-        {"mk": master_key, "run_id": run_id, "profile_id": profile_id},
+        {
+            "mk": master_key,
+            "art9": include_special_category,
+            "run_id": run_id,
+            "profile_id": profile_id,
+        },
     )
     return [
         DashboardInference(

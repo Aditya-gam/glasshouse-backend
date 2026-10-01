@@ -2,7 +2,8 @@
 
 Real Alembic schema, app-role + RLS. Persists inferences directly (the attack pipeline is covered
 elsewhere), then asserts the endpoint serves calibrated reliability (never the raw), the taxonomy
-severity/sensitivity, Art. 9 value decryption, abstain handling, and RLS isolation.
+severity/sensitivity, consent-gated Art. 9 value masking/decryption, abstain handling, and RLS
+isolation.
 """
 
 import os
@@ -153,6 +154,17 @@ async def _seed_run_with_inferences(
     return user_id
 
 
+async def _grant_art9(owner_engine: AsyncEngine, user_id: uuid.UUID) -> None:
+    async with owner_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO consents (user_id, purpose, special_category, policy_version) "
+                "VALUES (:u, 'art9_inference', true, 'v1')"
+            ),
+            {"u": user_id},
+        )
+
+
 async def test_dashboard_serves_calibrated_cards(
     client: AsyncClient, owner_engine: AsyncEngine, app_engine: AsyncEngine
 ) -> None:
@@ -173,9 +185,11 @@ async def test_dashboard_serves_calibrated_cards(
     assert location["abstain"] is False
 
 
-async def test_art9_birthplace_value_decrypted_and_flagged(
+async def test_art9_birthplace_masked_without_consent(
     client: AsyncClient, owner_engine: AsyncEngine, app_engine: AsyncEngine
 ) -> None:
+    # fail closed: with no art9_inference consent the special-category value is masked on the card,
+    # though the attribute is still flagged and its calibrated reliability still shown.
     user_id = await _seed_run_with_inferences(owner_engine, app_engine)
 
     cards = {
@@ -186,7 +200,29 @@ async def test_art9_birthplace_value_decrypted_and_flagged(
     }
 
     birthplace = cards["birthplace"]
-    assert birthplace["value"] == "Lyon, France"  # value_ct decrypted in-query
+    assert birthplace["value"] is None  # value_ct never decrypted without consent (SQL-source mask)
+    assert birthplace["art9"] is True and birthplace["sensitive"] is True
+    assert birthplace["reliability"]["point"] == 0.60  # reliability is not the sensitive value
+    # a masked card is still an INFERENCE, not an abstain — the UI must not render "no inference"
+    assert birthplace["abstain"] is False
+    assert birthplace["evidence"] != "no inference"
+
+
+async def test_art9_birthplace_decrypted_with_consent(
+    client: AsyncClient, owner_engine: AsyncEngine, app_engine: AsyncEngine
+) -> None:
+    user_id = await _seed_run_with_inferences(owner_engine, app_engine)
+    await _grant_art9(owner_engine, user_id)
+
+    cards = {
+        c["code"]: c
+        for c in (
+            await client.get("/v1/inferences", headers={"X-Dev-User-Id": str(user_id)})
+        ).json()
+    }
+
+    birthplace = cards["birthplace"]
+    assert birthplace["value"] == "Lyon, France"  # value_ct decrypted under valid Art. 9 consent
     assert birthplace["art9"] is True and birthplace["sensitive"] is True
     assert birthplace["reliability"]["point"] == 0.60
 
