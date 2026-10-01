@@ -3033,7 +3033,7 @@
     },
     "/v1/inferences": {
       "get": {
-        "description": "The user's attribute cards (RLS-scoped), optionally filtered to one run / profile.",
+        "description": "The user's attribute cards (RLS-scoped), optionally filtered to one run / profile.\n\nSpecial-category (Art. 9) values are decrypted only under valid `art9_inference` consent and\nmasked otherwise \u2014 the same fail-closed gate as the attribution detail.",
         "operationId": "list_inferences_v1_inferences_get",
         "parameters": [
           {
