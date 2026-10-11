@@ -53,6 +53,9 @@ class RunCreate(ApiModel):
     Retries are deduped via the `Idempotency-Key` request header (api-design rule), not a field.
     """
 
+    # Only the types a client can create directly. `ingestion` and `export` runs exist in
+    # `runs.type` too (W2/W5) but are created by POST /v1/imports and POST /v1/account/export
+    # (an ingestion run needs the uploaded file; export needs the export service), never here.
     type: Literal["attack", "eval", "remediation"]
     params: dict[str, object] = {}
 
@@ -77,7 +80,7 @@ class RunAccepted(ApiModel):
 
 
 class RunStatus(ApiModel):
-    """Poll response for a run."""
+    """Poll response for a run. `type` ∈ attack | eval | remediation | ingestion | export."""
 
     id: UUID
     type: str
@@ -96,6 +99,7 @@ class RunPage(ApiModel):
 
 # ------------------------------------------------------------- inferences --
 class Candidate(ApiModel):
+    id: str  # the candidate's id → POST /v1/inferences/{id}/confirm {candidate_id}
     rank: int
     label: str
     note: str
@@ -171,9 +175,21 @@ class AttributeFindingRead(ApiModel):
 
 
 class InferenceConfirm(ApiModel):
-    """POST /v1/inferences/{id}/confirm — the user confirms/denies (a live ground-truth signal)."""
+    """POST /v1/inferences/{id}/confirm — confirm/deny a ranked candidate (a ground-truth signal).
 
-    value: str
+    Takes the candidate **id**, never its value (write-paths D7): a special-category value is never
+    sent back to the server or stored a second time. The candidate is scoped to the path inference.
+    """
+
+    candidate_id: UUID
+    confirmed: bool
+
+
+class InferenceConfirmRead(ApiModel):
+    """Echo of the stored feedback (upserted into `inference_feedback`)."""
+
+    inference_id: UUID
+    candidate_id: UUID
     confirmed: bool
 
 
@@ -239,11 +255,14 @@ class RemediationCreate(ApiModel):
 
 # ------------------------------------------------- imports / connectors --
 class ImportRead(ApiModel):
+    """An import source + its ingestion run; status is the run's, counts land when it finishes."""
+
     id: UUID
     platform: str | None = None
     status: str
-    kept: int | None = None
-    dropped: int | None = None
+    run_id: UUID | None = None  # the ingestion run → poll GET /v1/runs/{id} or its SSE
+    kept_count: int | None = None  # subject-authored items kept (null until the run finishes)
+    dropped_count: int | None = None  # third-party items dropped at ingestion
     created_at: datetime | None = None
 
 
@@ -265,16 +284,29 @@ class ConnectorStart(ApiModel):
 
 
 # ------------------------------------------------------------- account --
+ConsentPurpose = Literal["self_audit", "art9_inference", "decoy"]
+
+
+class ConsentState(ApiModel):
+    """One purpose's consent: whether it is granted, and (if so) its policy version + grant time."""
+
+    granted: bool
+    policy_version: str | None = None  # null when not granted
+    granted_at: datetime | None = None
+
+
 class ConsentRead(ApiModel):
-    purpose: bool
-    art9: bool
-    decoy: bool
+    """The caller's standing consent, one `ConsentState` per purpose (write-paths D4)."""
+
+    self_audit: ConsentState
+    art9_inference: ConsentState
+    decoy: ConsentState
 
 
-class ConsentUpdate(ApiModel):
-    purpose: str
-    special_category: bool = False
-    decoy: bool = False
+class ConsentGrant(ApiModel):
+    """POST /v1/account/consents — grant one purpose (revoke is DELETE .../consents/{purpose})."""
+
+    purpose: ConsentPurpose
 
 
 class RetentionUpdate(ApiModel):

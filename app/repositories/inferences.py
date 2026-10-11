@@ -278,6 +278,7 @@ async def list_dashboard_inferences(
 class FindingCandidate:
     """One ranked candidate: decrypted value + its own calibrated reliability (never the raw)."""
 
+    id: UUID  # the candidate row id — the read exposes it so confirm/deny can reference it (W6)
     rank: int
     value: dict[str, Any] | None  # decrypted top value, or None (abstained / Art. 9-masked)
     calibrated_reliability: Decimal | None
@@ -349,7 +350,7 @@ async def get_inference_finding(
 
     candidate_rows = await conn.execute(
         text(
-            "SELECT rank, "
+            "SELECT id, rank, "
             "  CASE WHEN value IS NOT NULL THEN value "
             "       WHEN value_ct IS NOT NULL AND CAST(:art9 AS boolean) "
             "         THEN decrypt_field(app_user_id(), value_ct, :mk)::jsonb ELSE NULL END, "
@@ -359,7 +360,7 @@ async def get_inference_finding(
         {"mk": master_key, "inf": inference_id, "art9": include_special_category},
     )
     candidates = [
-        FindingCandidate(rank=row[0], value=row[1], calibrated_reliability=row[2])
+        FindingCandidate(id=row[0], rank=row[1], value=row[2], calibrated_reliability=row[3])
         for row in candidate_rows
     ]
 

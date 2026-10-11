@@ -366,8 +366,38 @@
         "title": "BenchmarkRead",
         "type": "object"
       },
+      "Body_create_import_v1_imports_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "contentMediaType": "application/octet-stream",
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "platform": {
+            "enum": [
+              "reddit",
+              "x"
+            ],
+            "title": "Platform",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "files"
+        ],
+        "title": "Body_create_import_v1_imports_post",
+        "type": "object"
+      },
       "Candidate": {
         "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -382,6 +412,7 @@
           }
         },
         "required": [
+          "id",
           "rank",
           "label",
           "note"
@@ -456,50 +487,81 @@
         "title": "ConnectorStart",
         "type": "object"
       },
-      "ConsentRead": {
+      "ConsentGrant": {
+        "description": "POST /v1/account/consents \u2014 grant one purpose (revoke is DELETE .../consents/{purpose}).",
         "properties": {
-          "art9": {
-            "title": "Art9",
-            "type": "boolean"
-          },
-          "decoy": {
-            "title": "Decoy",
-            "type": "boolean"
-          },
           "purpose": {
-            "title": "Purpose",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "purpose",
-          "art9",
-          "decoy"
-        ],
-        "title": "ConsentRead",
-        "type": "object"
-      },
-      "ConsentUpdate": {
-        "properties": {
-          "decoy": {
-            "default": false,
-            "title": "Decoy",
-            "type": "boolean"
-          },
-          "purpose": {
+            "enum": [
+              "self_audit",
+              "art9_inference",
+              "decoy"
+            ],
             "title": "Purpose",
             "type": "string"
-          },
-          "special_category": {
-            "default": false,
-            "title": "Special Category",
-            "type": "boolean"
           }
         },
         "required": [
           "purpose"
         ],
-        "title": "ConsentUpdate",
+        "title": "ConsentGrant",
+        "type": "object"
+      },
+      "ConsentRead": {
+        "description": "The caller's standing consent, one `ConsentState` per purpose (write-paths D4).",
+        "properties": {
+          "art9_inference": {
+            "$ref": "#/components/schemas/ConsentState"
+          },
+          "decoy": {
+            "$ref": "#/components/schemas/ConsentState"
+          },
+          "self_audit": {
+            "$ref": "#/components/schemas/ConsentState"
+          }
+        },
+        "required": [
+          "self_audit",
+          "art9_inference",
+          "decoy"
+        ],
+        "title": "ConsentRead",
+        "type": "object"
+      },
+      "ConsentState": {
+        "description": "One purpose's consent: whether it is granted, and (if so) its policy version + grant time.",
+        "properties": {
+          "granted": {
+            "title": "Granted",
+            "type": "boolean"
+          },
+          "granted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Granted At"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          }
+        },
+        "required": [
+          "granted"
+        ],
+        "title": "ConsentState",
         "type": "object"
       },
       "DefendEdit": {
@@ -969,6 +1031,7 @@
         "type": "object"
       },
       "ImportRead": {
+        "description": "An import source + its ingestion run; status is the run's, counts land when it finishes.",
         "properties": {
           "created_at": {
             "anyOf": [
@@ -982,7 +1045,7 @@
             ],
             "title": "Created At"
           },
-          "dropped": {
+          "dropped_count": {
             "anyOf": [
               {
                 "type": "integer"
@@ -991,14 +1054,14 @@
                 "type": "null"
               }
             ],
-            "title": "Dropped"
+            "title": "Dropped Count"
           },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
           },
-          "kept": {
+          "kept_count": {
             "anyOf": [
               {
                 "type": "integer"
@@ -1007,7 +1070,7 @@
                 "type": "null"
               }
             ],
-            "title": "Kept"
+            "title": "Kept Count"
           },
           "platform": {
             "anyOf": [
@@ -1019,6 +1082,18 @@
               }
             ],
             "title": "Platform"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
           },
           "status": {
             "title": "Status",
@@ -1033,22 +1108,49 @@
         "type": "object"
       },
       "InferenceConfirm": {
-        "description": "POST /v1/inferences/{id}/confirm \u2014 the user confirms/denies (a live ground-truth signal).",
+        "description": "POST /v1/inferences/{id}/confirm \u2014 confirm/deny a ranked candidate (a ground-truth signal).\n\nTakes the candidate **id**, never its value (write-paths D7): a special-category value is never\nsent back to the server or stored a second time. The candidate is scoped to the path inference.",
         "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "confirmed"
+        ],
+        "title": "InferenceConfirm",
+        "type": "object"
+      },
+      "InferenceConfirmRead": {
+        "description": "Echo of the stored feedback (upserted into `inference_feedback`).",
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
           "confirmed": {
             "title": "Confirmed",
             "type": "boolean"
           },
-          "value": {
-            "title": "Value",
+          "inference_id": {
+            "format": "uuid",
+            "title": "Inference Id",
             "type": "string"
           }
         },
         "required": [
-          "value",
+          "inference_id",
+          "candidate_id",
           "confirmed"
         ],
-        "title": "InferenceConfirm",
+        "title": "InferenceConfirmRead",
         "type": "object"
       },
       "Problem": {
@@ -1266,7 +1368,7 @@
         "type": "object"
       },
       "RunStatus": {
-        "description": "Poll response for a run.",
+        "description": "Poll response for a run. `type` \u2208 attack | eval | remediation | ingestion | export.",
         "properties": {
           "engine_version": {
             "anyOf": [
@@ -1406,7 +1508,7 @@
     },
     "/v1/account": {
       "delete": {
-        "description": "Erasure \u2014 crypto-shred + cascade + object deletion.",
+        "description": "Erasure \u2014 synchronous crypto-shred + cascade + object deletion; 204 when done (D5).\n\nThe user id comes from the verified token only. The frontend deletes the Clerk identity after.",
         "operationId": "erase_account_v1_account_delete",
         "parameters": [
           {
@@ -1428,14 +1530,7 @@
           }
         ],
         "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RunAccepted"
-                }
-              }
-            },
+          "204": {
             "description": "Successful Response"
           },
           "400": {
@@ -1505,7 +1600,7 @@
         ]
       },
       "get": {
-        "description": "Profile + consents + linked accounts + retention setting.",
+        "description": "Consents (one state per purpose) + retention setting + linked accounts.",
         "operationId": "get_account_v1_account_get",
         "parameters": [
           {
@@ -1605,115 +1700,8 @@
       }
     },
     "/v1/account/consents": {
-      "delete": {
-        "operationId": "revoke_consent_v1_account_consents_delete",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-dev-user-id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Dev-User-Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConsentUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConsentRead"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              },
-              "application/problem+json": {}
-            },
-            "description": "Bad Request"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              },
-              "application/problem+json": {}
-            },
-            "description": "Unauthorized"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              },
-              "application/problem+json": {}
-            },
-            "description": "Not Found"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              },
-              "application/problem+json": {}
-            },
-            "description": "Unprocessable Entity"
-          },
-          "501": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              },
-              "application/problem+json": {}
-            },
-            "description": "Not Implemented"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Revoke Consent",
-        "tags": [
-          "account"
-        ]
-      },
       "post": {
+        "description": "Grant one consent purpose; returns the updated account. Writes an audit event (W1).",
         "operationId": "grant_consent_v1_account_consents_post",
         "parameters": [
           {
@@ -1738,7 +1726,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ConsentUpdate"
+                "$ref": "#/components/schemas/ConsentGrant"
               }
             }
           },
@@ -1749,7 +1737,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConsentRead"
+                  "$ref": "#/components/schemas/AccountRead"
                 }
               }
             },
@@ -1822,9 +1810,117 @@
         ]
       }
     },
+    "/v1/account/consents/{purpose}": {
+      "delete": {
+        "description": "Revoke one consent purpose (immediate; stops processing, does not delete data).",
+        "operationId": "revoke_consent_v1_account_consents__purpose__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "purpose",
+            "required": true,
+            "schema": {
+              "enum": [
+                "self_audit",
+                "art9_inference",
+                "decoy"
+              ],
+              "title": "Purpose",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-dev-user-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Unprocessable Entity"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Not Implemented"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Revoke Consent",
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/v1/account/export": {
       "post": {
-        "description": "DSAR export bundle (expiring authenticated download).",
+        "description": "DSAR export \u2192 an `export` run (202 + run_id); poll it, then GET the download below.",
         "operationId": "export_account_v1_account_export_post",
         "parameters": [
           {
@@ -1923,8 +2019,116 @@
         ]
       }
     },
+    "/v1/account/export/{run_id}": {
+      "get": {
+        "description": "Owner-only, expiring download of a finished export run's bundle; 404 otherwise.",
+        "operationId": "download_export_v1_account_export__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-dev-user-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {}
+            },
+            "description": "the encrypted export bundle (owner only; expires)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Unprocessable Entity"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Not Implemented"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Export",
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/v1/account/retention": {
       "put": {
+        "description": "Set the retention window (`retain` | `discard`); returns the updated account.",
         "operationId": "set_retention_v1_account_retention_put",
         "parameters": [
           {
@@ -2822,9 +3026,25 @@
         ]
       },
       "post": {
-        "description": "Upload an export/photo set \u2192 an ingestion run (202 + run_id).",
+        "description": "Upload an export \u2192 an ingestion run (202 + run_id). Consent-gated; limits enforced in W2.",
         "operationId": "create_import_v1_imports_post",
         "parameters": [
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
           {
             "in": "header",
             "name": "x-dev-user-id",
@@ -2843,6 +3063,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_import_v1_imports_post"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "202": {
             "content": {
@@ -3283,6 +3513,7 @@
     },
     "/v1/inferences/{inference_id}/confirm": {
       "post": {
+        "description": "Confirm/deny a candidate of this inference (upsert into `inference_feedback`); lands at W6.\n\nTakes the candidate id, not its value (write-paths D7). 404 for an inference the user does not\nown (no existence signal).",
         "operationId": "confirm_inference_v1_inferences__inference_id__confirm_post",
         "parameters": [
           {
@@ -3328,7 +3559,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AttributeFindingRead"
+                  "$ref": "#/components/schemas/InferenceConfirmRead"
                 }
               }
             },
