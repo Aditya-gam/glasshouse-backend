@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, UploadFile, status
 
 from app.api.deps import get_current_user
 from app.api.errors import NotImplementedYet
-from app.api.v1.schemas import ImportRead, RunAccepted
+from app.api.v1.schemas import ImportPage, ImportRead, RunAccepted
 
 router = APIRouter(prefix="/v1/imports", tags=["imports"])
 
@@ -32,7 +32,8 @@ async def create_import(
 
 
 @router.get("")
-async def list_imports(user_id: Annotated[UUID, Depends(get_current_user)]) -> list[ImportRead]:
+async def list_imports(user_id: Annotated[UUID, Depends(get_current_user)]) -> ImportPage:
+    """The caller's imports, newest first, cursor-paginated (envelope, not a bare array)."""
     raise NotImplementedYet(_NOT_YET)
 
 
