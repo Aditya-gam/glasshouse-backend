@@ -48,7 +48,12 @@ def _note(calibrated: Decimal | None) -> str:
 def _candidate(code: AttributeCode, candidate: FindingCandidate) -> Candidate:
     value = _value(candidate.value)
     label = render_value(code, value) if value is not None else ""
-    return Candidate(rank=candidate.rank, label=label, note=_note(candidate.calibrated_reliability))
+    return Candidate(
+        id=str(candidate.id),
+        rank=candidate.rank,
+        label=label,
+        note=_note(candidate.calibrated_reliability),
+    )
 
 
 def _evidence(evidence: FindingEvidence) -> EvidenceRead:

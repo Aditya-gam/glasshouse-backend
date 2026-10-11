@@ -19,6 +19,7 @@ _SEATTLE = {
     "precision_level": "city",
     "neighborhood": "Capitol Hill",
 }
+_CID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
 
 def _finding(
@@ -59,7 +60,9 @@ def _evidence(**overrides: object) -> FindingEvidence:
 def test_likely_evidence_carries_proxy_not_marginal() -> None:
     finding = _finding(
         candidates=[
-            FindingCandidate(rank=1, value=_SEATTLE, calibrated_reliability=Decimal("0.76"))
+            FindingCandidate(
+                id=_CID, rank=1, value=_SEATTLE, calibrated_reliability=Decimal("0.76")
+            )
         ],
         evidence=[_evidence(proxy_score=Decimal("42"), citation_frequency=Decimal("70"))],
     )
@@ -77,7 +80,7 @@ def test_likely_evidence_carries_proxy_not_marginal() -> None:
 
 def test_proven_evidence_carries_the_ablation_delta() -> None:
     finding = _finding(
-        candidates=[FindingCandidate(rank=1, value=_SEATTLE, calibrated_reliability=None)],
+        candidates=[FindingCandidate(id=_CID, rank=1, value=_SEATTLE, calibrated_reliability=None)],
         evidence=[_evidence(marginal_effect=Decimal("-0.30"))],
     )
 
@@ -91,13 +94,16 @@ def test_proven_evidence_carries_the_ablation_delta() -> None:
 def test_masked_candidate_value_renders_empty() -> None:
     # the repo masked the Art. 9 value at the SQL source (value=None); the label must be blank.
     finding = _finding(
-        candidates=[FindingCandidate(rank=1, value=None, calibrated_reliability=Decimal("0.76"))],
+        candidates=[
+            FindingCandidate(id=_CID, rank=1, value=None, calibrated_reliability=Decimal("0.76"))
+        ],
         attribute="birthplace",
     )
 
     read = assemble_finding(finding)
 
     assert read.value is None
+    assert read.candidates[0].id == str(_CID)  # id still exposed (masked value, confirm can target)
     assert read.candidates[0].label == ""
     assert read.candidates[0].note == "76% reliable"  # reliability is not the sensitive value
 
@@ -115,7 +121,9 @@ def test_geo_value_exposes_precision_and_neighborhood() -> None:
     read = assemble_finding(
         _finding(
             candidates=[
-                FindingCandidate(rank=1, value=_SEATTLE, calibrated_reliability=Decimal("0.76"))
+                FindingCandidate(
+                    id=_CID, rank=1, value=_SEATTLE, calibrated_reliability=Decimal("0.76")
+                )
             ]
         )
     )

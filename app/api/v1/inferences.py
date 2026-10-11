@@ -20,6 +20,7 @@ from app.api.v1.schemas import (
     AttributeFindingRead,
     AttributeRead,
     InferenceConfirm,
+    InferenceConfirmRead,
     Reliability,
     RemediationCreate,
     RunAccepted,
@@ -125,8 +126,13 @@ async def confirm_inference(
     inference_id: UUID,
     body: InferenceConfirm,
     user_id: Annotated[UUID, Depends(get_current_user)],
-) -> AttributeFindingRead:
-    raise NotImplementedYet("confirm/deny lands at M3")
+) -> InferenceConfirmRead:
+    """Confirm/deny a candidate of this inference (upsert into `inference_feedback`); lands at W6.
+
+    Takes the candidate id, not its value (write-paths D7). 404 for an inference the user does not
+    own (no existence signal).
+    """
+    raise NotImplementedYet("confirm/deny lands in M5.W (W6)")
 
 
 @router.post("/{inference_id}/remediations", status_code=status.HTTP_202_ACCEPTED)

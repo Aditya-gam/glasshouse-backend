@@ -237,6 +237,8 @@ async def test_detail_serves_candidates_and_decrypted_evidence(
     assert body["candidates"][0]["label"] == "Seattle, WA, USA"
     assert body["candidates"][0]["note"] == "76% reliable"
     assert body["candidates"][1]["label"] == "Bellevue, WA, USA"
+    # each candidate exposes its id so the confirm/deny route can reference it (W6)
+    assert all(uuid.UUID(c["id"]) for c in body["candidates"])
     # one decrypted, per-item evidence row joined to its source post
     assert len(body["evidence_items"]) == 1
     evidence = body["evidence_items"][0]
