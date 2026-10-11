@@ -266,6 +266,13 @@ class ImportRead(ApiModel):
     created_at: datetime | None = None
 
 
+class ImportPage(ApiModel):
+    """A cursor page of imports, newest first; `next_cursor` is null on the last page (opaque)."""
+
+    items: list[ImportRead]
+    next_cursor: str | None = None
+
+
 class ConnectedAccountRead(ApiModel):
     """Linked account — status + handle only, never tokens."""
 
@@ -304,9 +311,15 @@ class ConsentRead(ApiModel):
 
 
 class ConsentGrant(ApiModel):
-    """POST /v1/account/consents — grant one purpose (revoke is DELETE .../consents/{purpose})."""
+    """POST /v1/account/consents — grant one purpose for the CURRENT policy version.
+
+    `policy_version` must equal the account's `current_policy_version`; a grant against a stale
+    version (the policy changed since the screen was shown) is refused 409, so the stored consent
+    records the exact text the user agreed to (GDPR Art. 7(1) / Art. 9). Revoke is a path DELETE.
+    """
 
     purpose: ConsentPurpose
+    policy_version: str
 
 
 class RetentionUpdate(ApiModel):
@@ -317,6 +330,7 @@ class AccountRead(ApiModel):
     consents: ConsentRead
     retention: Literal["retain", "discard"]
     connected_accounts: list[ConnectedAccountRead]
+    current_policy_version: str  # the version a new ConsentGrant must cite (backend is the source)
 
 
 # --------------------------------------------------------------- eval --

@@ -13,6 +13,10 @@
           "consents": {
             "$ref": "#/components/schemas/ConsentRead"
           },
+          "current_policy_version": {
+            "title": "Current Policy Version",
+            "type": "string"
+          },
           "retention": {
             "enum": [
               "retain",
@@ -25,7 +29,8 @@
         "required": [
           "consents",
           "retention",
-          "connected_accounts"
+          "connected_accounts",
+          "current_policy_version"
         ],
         "title": "AccountRead",
         "type": "object"
@@ -488,8 +493,12 @@
         "type": "object"
       },
       "ConsentGrant": {
-        "description": "POST /v1/account/consents \u2014 grant one purpose (revoke is DELETE .../consents/{purpose}).",
+        "description": "POST /v1/account/consents \u2014 grant one purpose for the CURRENT policy version.\n\n`policy_version` must equal the account's `current_policy_version`; a grant against a stale\nversion (the policy changed since the screen was shown) is refused 409, so the stored consent\nrecords the exact text the user agreed to (GDPR Art. 7(1) / Art. 9). Revoke is a path DELETE.",
         "properties": {
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
           "purpose": {
             "enum": [
               "self_audit",
@@ -501,7 +510,8 @@
           }
         },
         "required": [
-          "purpose"
+          "purpose",
+          "policy_version"
         ],
         "title": "ConsentGrant",
         "type": "object"
@@ -1028,6 +1038,34 @@
           "taken"
         ],
         "title": "Exif",
+        "type": "object"
+      },
+      "ImportPage": {
+        "description": "A cursor page of imports, newest first; `next_cursor` is null on the last page (opaque).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ImportPage",
         "type": "object"
       },
       "ImportRead": {
@@ -1701,7 +1739,7 @@
     },
     "/v1/account/consents": {
       "post": {
-        "description": "Grant one consent purpose; returns the updated account. Writes an audit event (W1).",
+        "description": "Grant one consent purpose for the current policy version; returns the updated account.\n\n409 if `body.policy_version` is not the account's `current_policy_version` (a grant made against\na stale screen), so the consent records the exact text the user agreed to. Audit event (W1).",
         "operationId": "grant_consent_v1_account_consents_post",
         "parameters": [
           {
@@ -1775,6 +1813,17 @@
               "application/problem+json": {}
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "application/problem+json": {}
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -2924,6 +2973,7 @@
     },
     "/v1/imports": {
       "get": {
+        "description": "The caller's imports, newest first, cursor-paginated (envelope, not a bare array).",
         "operationId": "list_imports_v1_imports_get",
         "parameters": [
           {
@@ -2949,11 +2999,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ImportRead"
-                  },
-                  "title": "Response List Imports V1 Imports Get",
-                  "type": "array"
+                  "$ref": "#/components/schemas/ImportPage"
                 }
               }
             },

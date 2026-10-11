@@ -18,6 +18,7 @@ from app.api.v1.schemas import (
     AccountRead,
     ConsentGrant,
     ConsentPurpose,
+    Problem,
     RetentionUpdate,
     RunAccepted,
 )
@@ -25,6 +26,8 @@ from app.api.v1.schemas import (
 router = APIRouter(prefix="/v1/account", tags=["account"])
 
 _NOT_YET = "account write paths land in M5.W (W1/W3/W4/W5)"
+# A grant whose policy_version is not the current one is refused (W1); documented on the route now.
+_PROBLEM = {"model": Problem, "content": {"application/problem+json": {}}}
 
 
 @router.get("")
@@ -33,11 +36,15 @@ async def get_account(user_id: Annotated[UUID, Depends(get_current_user)]) -> Ac
     raise NotImplementedYet(_NOT_YET)
 
 
-@router.post("/consents")
+@router.post("/consents", responses={status.HTTP_409_CONFLICT: _PROBLEM})
 async def grant_consent(
     body: ConsentGrant, user_id: Annotated[UUID, Depends(get_current_user)]
 ) -> AccountRead:
-    """Grant one consent purpose; returns the updated account. Writes an audit event (W1)."""
+    """Grant one consent purpose for the current policy version; returns the updated account.
+
+    409 if `body.policy_version` is not the account's `current_policy_version` (a grant made against
+    a stale screen), so the consent records the exact text the user agreed to. Audit event (W1).
+    """
     raise NotImplementedYet(_NOT_YET)
 
 
